@@ -197,8 +197,8 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ── Amount display ─────────────────────────────────────────────────────────────
 
 def _disp(amount: float) -> str:
-    """expense (neg) → shown as negative; income (pos) → shown as positive."""
-    return f"{amount:,.2f} ₴"
+    """expense (neg internally) → shown as positive; income (pos internally) → shown as negative."""
+    return f"{-amount:,.2f} ₴"
 
 def _disp_with_type(amount: float) -> str:
     t = "расход" if amount < 0 else "доход"
@@ -767,7 +767,7 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     success = False
     if notion:
         success = await asyncio.to_thread(
-            notion.create_transaction, desc, amt, dt, cid, notes
+            notion.create_transaction, desc, -amt, dt, cid, notes
         )
 
     if success:
@@ -1049,7 +1049,7 @@ async def _apply_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, dt: date
     if notion:
         success = await asyncio.to_thread(
             notion.create_transaction,
-            tpl["name"], tpl["amount"], dt,
+            tpl["name"], -tpl["amount"], dt,
             tpl.get("category_id"), tpl.get("notes", ""),
         )
 
@@ -1317,7 +1317,7 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
             desc   = item.get("description", "Транзакция")
             amount = item.get("amount", 0) / 100
             dt     = datetime.fromtimestamp(item.get("time", 0), tz=timezone.utc)
-            await asyncio.to_thread(notion.create_transaction, desc, amount, dt)
+            await asyncio.to_thread(notion.create_transaction, desc, -amount, dt)
 
         if debug and chat_id:
             bot: Bot = ctx.bot
