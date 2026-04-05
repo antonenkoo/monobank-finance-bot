@@ -569,6 +569,7 @@ async def add_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     ctx.user_data.clear()
     ctx.user_data["mode"] = "add"
+    asyncio.create_task(_load_cats(ctx))  # preload while user types description
     return await _show_desc(update.message, "add")
 
 
@@ -577,6 +578,7 @@ async def create_template_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
     ctx.user_data.clear()
     ctx.user_data["mode"] = "template"
+    asyncio.create_task(_load_cats(ctx))  # preload while user types name
     return await _show_desc(update.message, "template")
 
 
