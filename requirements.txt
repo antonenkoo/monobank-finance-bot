@@ -1,0 +1,18 @@
+# Telegram bot framework
+python-telegram-bot[job-queue]==21.9
+
+# Webhook server
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+
+# Ngrok tunnel
+ngrok==1.4.0
+
+# Config
+python-dotenv==1.0.1
+
+# HTTP requests (for Notion API)
+requests==2.32.3
+
+# Timezone database (required on Windows)
+tzdata==2025.2
