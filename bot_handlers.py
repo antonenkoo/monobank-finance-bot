@@ -197,8 +197,8 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ── Amount display ─────────────────────────────────────────────────────────────
 
 def _disp(amount: float) -> str:
-    """expense (neg) → positive display; income (pos) → negative display."""
-    return f"{-amount:,.2f} ₴"
+    """expense (neg) → shown as negative; income (pos) → shown as positive."""
+    return f"{amount:,.2f} ₴"
 
 def _disp_with_type(amount: float) -> str:
     t = "расход" if amount < 0 else "доход"
