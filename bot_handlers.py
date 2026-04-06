@@ -782,7 +782,7 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
                 timeout=5,
             )
             if remaining is not None:
-                remaining_text = f"\n💼 Осталось по категории: {remaining:,.2f} ₴"
+                remaining_text = f"\n💼 На месяц осталось по категории: {remaining:,.2f} ₴"
         except Exception as e:
             logger.exception("Failed to get category remaining: %s", e)
             remaining_text = "\n💼 Остаток по категории пока не удалось получить"
@@ -1077,7 +1077,7 @@ async def _apply_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, dt: date
                 tpl["category_id"],
             )
             if remaining is not None:
-                remaining_text = f"\n💼 Осталось по категории: {remaining:,.2f} ₴"
+                remaining_text = f"\n💼 На месяц осталось по категории: {remaining:,.2f} ₴"
 
     if success:
         await msg.reply_text(
