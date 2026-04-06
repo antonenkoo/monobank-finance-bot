@@ -529,7 +529,7 @@ async def _show_time(msg: Message) -> int:
     await msg.reply_text("Шаг 3/5: Выбери время транзакции:", reply_markup=TIME_KB)
     return ADD_TIME_CHOICE
 
-async def _show_notes(msg: Message, mode: str) -> int:
+async def _show_notes(msg: Message, mode: str) -> int: # no need this step
     step  = "4" if mode == "add" else "3"
     steps = "5" if mode == "add" else "4"
     await msg.reply_text(
@@ -639,7 +639,7 @@ async def add_sign(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if mode == "template":
         # Templates don't need a date/time
-        return await _show_notes(update.message, mode)
+        return await _show_category(update.message, ctx, mode)
 
     return await _show_time(update.message)
 
@@ -653,7 +653,7 @@ async def add_time_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
 
     if t == "🕐 Сейчас":
         ctx.user_data["add_dt"] = datetime.now(tz=timezone.utc)
-        return await _show_notes(update.message, mode)
+        return await _show_category(update.message, ctx, mode)
 
     if t == "📅 Указать дату и время":
         await update.message.reply_text(
@@ -685,7 +685,7 @@ async def add_custom_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         )
         return ADD_CUSTOM_TIME
 
-    return await _show_notes(update.message, mode)
+    return await _show_category(update.message, ctx, mode)
 
 
 async def add_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
@@ -706,7 +706,7 @@ async def add_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     mode = ctx.user_data.get("mode", "add")
 
     if t == "◀️ Назад":
-        return await _show_notes(update.message, mode)
+        return await _show_category(update.message, ctx, mode)
 
     _, cat_map    = await _load_cats(ctx)
     category_id   = None
@@ -876,7 +876,7 @@ def make_add_handler() -> ConversationHandler:
             ADD_SIGN:         [MessageHandler(_TXT, add_sign)],
             ADD_TIME_CHOICE:  [MessageHandler(_TXT, add_time_choice)],
             ADD_CUSTOM_TIME:  [MessageHandler(_TXT, add_custom_time)],
-            ADD_NOTES:        [MessageHandler(_TXT, add_notes)],
+          # ADD_NOTES:        [MessageHandler(_TXT, add_notes)],
             ADD_CATEGORY:     [MessageHandler(_TXT, add_category)],
             ADD_SAVE_CONFIRM: [MessageHandler(_TXT, add_save_confirm)],
             ADD_TPL_NAME:     [MessageHandler(_TXT, add_tpl_name)],
