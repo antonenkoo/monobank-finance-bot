@@ -767,10 +767,18 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     notion = _notion(ctx)
 
     success = False
+    remaining_text = ""
+
     if notion:
         success = await asyncio.to_thread(
             notion.create_transaction, desc, -amt, dt, cid, notes
         )
+
+        if success and cid:
+            await asyncio.sleep(0.7)  # дать Notion обновить rollup/formula
+            remaining = await asyncio.to_thread(notion.get_category_remaining, cid)
+            if remaining is not None:
+                remaining_text = f"\n💼 Осталось по категории: {remaining:,.2f} ₴"
 
     if success:
         await msg.reply_text(
@@ -779,11 +787,11 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             f"💰 {_disp_with_type(amt)}\n"
             f"📅 {dt.strftime('%d.%m.%Y %H:%M')}\n"
             f"🏷 {cname}"
-            + (f"\n💬 {notes}" if notes else ""),
+            + (f"\n💬 {notes}" if notes else "")
+            + remaining_text,
             parse_mode=ParseMode.HTML,
             reply_markup=SAVE_TPL_KB,
         )
-        # Keep user_data — needed if they choose to save as template
         return ADD_SAVE_CONFIRM
     else:
         await msg.reply_text(
@@ -794,7 +802,6 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         )
         ctx.user_data.clear()
         return ConversationHandler.END
-
 
 # ── Save-as-template offer ─────────────────────────────────────────────────────
 
@@ -1046,8 +1053,10 @@ async def _apply_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, dt: date
         await msg.reply_text("Шаблон не найден.", reply_markup=MAIN_KB)
         return ConversationHandler.END
 
-    notion  = _notion(ctx)
+    notion = _notion(ctx)
     success = False
+    remaining_text = ""
+
     if notion:
         success = await asyncio.to_thread(
             notion.create_transaction,
@@ -1055,13 +1064,23 @@ async def _apply_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, dt: date
             tpl.get("category_id"), tpl.get("notes", ""),
         )
 
+        if success and tpl.get("category_id"):
+            await asyncio.sleep(0.7)
+            remaining = await asyncio.to_thread(
+                notion.get_category_remaining,
+                tpl["category_id"],
+            )
+            if remaining is not None:
+                remaining_text = f"\n💼 Осталось по категории: {remaining:,.2f} ₴"
+
     if success:
         await msg.reply_text(
             f"✅ <b>Транзакция сохранена!</b>\n\n"
             f"<b>{tpl['name']}</b>\n"
             f"💰 {_disp_with_type(tpl['amount'])}\n"
             f"📅 {dt.strftime('%d.%m.%Y %H:%M')}\n"
-            f"🏷 {tpl.get('category_name', '—')}",
+            f"🏷 {tpl.get('category_name', '—')}"
+            + remaining_text,
             parse_mode=ParseMode.HTML,
         )
     else:

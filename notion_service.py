@@ -96,6 +96,29 @@ class NotionService:
         categories.sort(key=lambda c: c["name"].lower())
         logger.info("Loaded %d categories from Notion", len(categories))
         return categories
+    
+    def get_category_remaining(self, category_id: str) -> float | None:
+    page = self.notion.pages.retrieve(page_id=category_id)
+    prop = page["properties"].get("Remaining")
+    if not prop:
+        return None
+
+    ptype = prop.get("type")
+
+    if ptype == "number":
+        return prop.get("number")
+
+    if ptype == "formula":
+        formula = prop.get("formula", {})
+        if formula.get("type") == "number":
+            return formula.get("number")
+
+    if ptype == "rollup":
+        rollup = prop.get("rollup", {})
+        if rollup.get("type") == "number":
+            return rollup.get("number")
+
+    return None
 
     # ── Transactions ──────────────────────────────────────────────────────────
 
