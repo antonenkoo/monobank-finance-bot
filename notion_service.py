@@ -98,28 +98,57 @@ class NotionService:
         return categories
     
     def get_category_remaining(self, category_id: str) -> float | None:
-        page = self.notion.pages.retrieve(page_id=category_id)
-        prop = page["properties"].get("Remaining")
+        result = self._request("GET", f"/pages/{category_id}")
+        if not result:
+            return None
+
+        prop = result.get("properties", {}).get("Remaining")
         if not prop:
+            logger.warning("Remaining property not found for category %s", category_id)
             return None
 
         ptype = prop.get("type")
+        logger.info("Remaining property type for %s: %s", category_id, ptype)
 
         if ptype == "number":
             return prop.get("number")
 
         if ptype == "formula":
             formula = prop.get("formula", {})
-            if formula.get("type") == "number":
+            ftype = formula.get("type")
+
+            if ftype == "number":
                 return formula.get("number")
+
+            if ftype == "string":
+                value = formula.get("string")
+                if not value:
+                    return None
+                try:
+                    cleaned = (
+                        value.replace("₴", "")
+                        .replace(" ", "")
+                        .replace(",", ".")
+                        .strip()
+                    )
+                    return float(cleaned)
+                except ValueError:
+                    logger.warning("Could not parse Remaining formula string: %r", value)
+                    return None
 
         if ptype == "rollup":
             rollup = prop.get("rollup", {})
-            if rollup.get("type") == "number":
+            rtype = rollup.get("type")
+
+            if rtype == "number":
                 return rollup.get("number")
 
-        return None
+            logger.warning("Unsupported rollup type for Remaining: %s", rtype)
+            return None
 
+        logger.warning("Unsupported Remaining property type: %s", ptype)
+        return None
+        
     # ── Transactions ──────────────────────────────────────────────────────────
 
     def create_transaction(

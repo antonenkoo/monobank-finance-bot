@@ -774,12 +774,18 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             notion.create_transaction, desc, -amt, dt, cid, notes
         )
 
-        if success and cid:
-            await asyncio.sleep(0.7)  # дать Notion обновить rollup/formula
-            remaining = await asyncio.to_thread(notion.get_category_remaining, cid)
+    if success and cid:
+        try:
+            await asyncio.sleep(0.7)
+            remaining = await asyncio.wait_for(
+                asyncio.to_thread(notion.get_category_remaining, cid),
+                timeout=5,
+            )
             if remaining is not None:
                 remaining_text = f"\n💼 Осталось по категории: {remaining:,.2f} ₴"
-
+        except Exception as e:
+            logger.exception("Failed to get category remaining: %s", e)
+            remaining_text = "\n💼 Остаток по категории пока не удалось получить"
     if success:
         await msg.reply_text(
             f"✅ <b>Транзакция сохранена в Notion!</b>\n\n"
