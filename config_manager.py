@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+BOT_VERSION    = "1.1"
+
 ENV_PATH       = Path(".env")
 TEMPLATES_PATH = Path("templates.json")
 
@@ -24,11 +26,11 @@ FIELD_LABELS: dict[str, str] = {
     "MONOBANK_TOKEN":            "Monobank Personal Token",
     "MONOBANK_ACCOUNT_ID":       "Monobank Account ID",
     "NOTION_API_KEY":            "Notion API Key",
-    "NOTION_TRANSACTIONS_DB_ID": "Notion Transactions DB ID",
-    "NOTION_CATEGORIES_DB_ID":   "Notion Categories DB ID",
+    "NOTION_TRANSACTIONS_DB_ID": "Notion Transactions Database ID",
+    "NOTION_CATEGORIES_DB_ID":   "Notion Categories Database ID",
     "NGROK_AUTH_TOKEN":          "Ngrok Auth Token",
     "WEBHOOK_PORT":              "Webhook Port",
-    "DEBUG_MODE":                "Debug Mode",
+    "NOTION_REMAINING_PROP":     "Notion Column Name With Remaining Amount"
 }
 
 FIELD_HINTS: dict[str, str] = {
@@ -52,10 +54,13 @@ FIELD_HINTS: dict[str, str] = {
         "32 символа из URL базы категорий в Notion.\n"
         "Убедись, что интеграция подключена к этой базе тоже."
     ),
+    "NOTION_REMAINING_PROP": (
+        "Название колонки в которой пишеться количество денег оставшееся для каждого типа категории."
+    ),
     "NGROK_AUTH_TOKEN": (
         "Auth Token из ngrok — создаёт публичный URL для webhook.\n"
         "Где взять: dashboard.ngrok.com → Your Authtoken."
-    ),
+    )
 }
 
 EDITABLE_FIELDS: list[str] = [
@@ -65,6 +70,7 @@ EDITABLE_FIELDS: list[str] = [
     "NOTION_TRANSACTIONS_DB_ID",
     "NOTION_CATEGORIES_DB_ID",
     "NGROK_AUTH_TOKEN",
+    "NOTION_REMAINING_PROP",
 ]
 
 REQUIRED_FIELDS: list[str] = [
@@ -121,13 +127,13 @@ class ConfigManager:
     def missing_fields(self) -> list[str]:
         return [k for k in REQUIRED_FIELDS if not self.get(k)]
 
-    def is_debug(self) -> bool:
-        return self.get("DEBUG_MODE", "false").strip().lower() == "true"
+    def get_mode(self) -> str:
+        """Return current operating mode: 'silent' (default) or 'pro'."""
+        return self.get("BOT_MODE", "silent").strip().lower()
 
-    def toggle_debug(self) -> bool:
-        new = not self.is_debug()
-        self.set("DEBUG_MODE", "true" if new else "false")
-        return new
+    def set_mode(self, mode: str) -> None:
+        """Persist operating mode: 'silent' or 'pro'."""
+        self.set("BOT_MODE", mode)
 
     def get_webhook_port(self) -> int:
         return int(self.get("WEBHOOK_PORT", "8080"))
@@ -136,7 +142,7 @@ class ConfigManager:
         value = self.get(key)
         if not value:
             return "❌ не задан"
-        if key in ("TELEGRAM_CHAT_ID", "WEBHOOK_PORT", "DEBUG_MODE", "MONOBANK_ACCOUNT_ID"):
+        if key in ("TELEGRAM_CHAT_ID", "WEBHOOK_PORT", "MONOBANK_ACCOUNT_ID"):
             return value
         if len(value) <= 8:
             return "✅ " + "*" * len(value)
@@ -146,8 +152,8 @@ class ConfigManager:
         lines = ["<b>Текущие настройки:</b>\n"]
         for f in EDITABLE_FIELDS:
             lines.append(f"• {FIELD_LABELS[f]}: {self.mask(f)}")
-        debug = "включён 🔍" if self.is_debug() else "выключен 🔕"
-        lines.append(f"\n• Режим отладки: {debug}")
+        mode = "🔔 Про" if self.get_mode() == "pro" else "🔇 Тихий"
+        lines.append(f"\n• Режим работы: {mode}")
         return "\n".join(lines)
 
 

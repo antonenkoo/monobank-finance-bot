@@ -14,6 +14,7 @@ Run in a daemon thread via run_webhook_server().
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -39,8 +40,9 @@ app = FastAPI(docs_url=None, redoc_url=None)
 _account_id: str = ""
 _mono_token: str = ""
 
-# Track the running server instance for graceful restart
+# Track the running server instance and ngrok listener for graceful restart
 _server_instance: Optional[uvicorn.Server] = None
+_ngrok_listener = None  # ngrok Listener object
 
 
 # ── FastAPI routes ─────────────────────────────────────────────────────────────
@@ -66,12 +68,15 @@ async def webhook_event(request: Request) -> Response:
     account = data.get("account", "")
 
     if _account_id and account != _account_id:
-        logger.debug("Ignoring transaction for account %s (not configured)", account)
+        logger.warning(
+            "Webhook: ignoring transaction for account %s (configured: %s)",
+            account, _account_id,
+        )
         return Response(status_code=200)
 
     item = data.get("statementItem", {})
     webhook_queue.put(item)
-    logger.debug("Transaction queued: %s", item.get("description", "?"))
+    logger.info("Webhook: queued '%s' %.2f UAH", item.get("description", "?"), abs(item.get("amount", 0) / 100))
 
     return Response(status_code=200)
 
@@ -188,14 +193,31 @@ def _run_server_thread(port: int, ngrok_token: Optional[str], mono_token: str) -
     global _server_instance
 
     async def _start() -> None:
-        global _server_instance
+        global _server_instance, _ngrok_listener
         public_url: Optional[str] = None
 
         if ngrok_token:
+            # Close any existing listener before opening a new one to avoid
+            # ERR_NGROK_108 (1-session limit) on bot-triggered restarts.
+            if _ngrok_listener is not None:
+                try:
+                    await _ngrok_listener.close()
+                    logger.info("Ngrok: previous listener closed")
+                except Exception as exc:
+                    logger.warning("Ngrok: could not close previous listener: %s", exc)
+                _ngrok_listener = None
+
             try:
-                listener   = await ngrok.forward(port, authtoken=ngrok_token, proto="http")
+                listener = await ngrok.forward(port, authtoken=ngrok_token, proto="http")
+                _ngrok_listener = listener
                 public_url = listener.url()
                 logger.info("Ngrok tunnel: %s → localhost:%d", public_url, port)
+                try:
+                    url_file = os.path.join(os.path.expanduser("~"), ".tunnel-current-url")
+                    with open(url_file, "w") as f:
+                        f.write(public_url)
+                except Exception as exc:
+                    logger.warning("Could not write tunnel URL to file: %s", exc)
             except Exception as exc:
                 logger.error("Ngrok failed: %s", exc)
         else:

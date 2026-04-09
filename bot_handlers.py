@@ -12,12 +12,14 @@ Amount display convention (user-facing only):
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timezone
 from typing import Optional
 
-from telegram import Bot, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -26,6 +28,7 @@ from telegram.ext import (
 )
 
 from config_manager import (
+    BOT_VERSION,
     EDITABLE_FIELDS,
     FIELD_HINTS,
     FIELD_LABELS,
@@ -40,8 +43,35 @@ from monobank_service import (
     webhook_queue,
 )
 from notion_service import NotionService
+from pending_store import PendingTransactionStore
 
 logger = logging.getLogger(__name__)
+
+# ── Pending transaction store (persists to JSON across restarts) ───────────────
+_pending_store = PendingTransactionStore()
+
+# ── Startup messages ───────────────────────────────────────────────────────────
+_STARTUP_MESSAGES = [
+    "🚀 <b>Monobank Finance Bot запущен!</b>\nСлушаю webhook и жду твои транзакции 👀",
+    "💰 <b>Бот снова в строю!</b>\nГотов ловить расходы и нести их в Notion 📊",
+    "🤖 <b>Я здесь!</b>\nWebhook Monobank подключён. Деньгам не скрыться! 💸",
+    "📡 <b>Сервер запущен.</b>\nMono поглядываю — Notion жду. Поехали! 🏎",
+    "🔔 <b>Финансовый страж на посту!</b>\nКаждая гривна будет записана в Notion ✅",
+]
+
+
+async def send_startup_message(bot: Bot, chat_id: str) -> None:
+    """Send a random friendly startup message to the owner's chat."""
+    try:
+        text = random.choice(_STARTUP_MESSAGES) + f"\n\n<i>v{BOT_VERSION}</i>"
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.error("Failed to send startup message: %s", exc)
+
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -54,7 +84,10 @@ def _kb(*rows: list[str], one_time: bool = False) -> ReplyKeyboardMarkup:
 
 MAIN_KB = _kb(["➕ Добавить", "📋 Шаблоны"], ["⚙️ Настройки"])
 
-SETTINGS_KB = _kb(["⚙️ Конфигурация"], ["◀️ Назад"])
+def _settings_kb(mode: str) -> ReplyKeyboardMarkup:
+    """Settings menu keyboard with mode-toggle button showing the opposite mode."""
+    toggle = "🔔 Про режим" if mode == "silent" else "🔇 Тихий режим"
+    return _kb(["⚙️ Конфигурация"], [toggle], ["◀️ Назад"])
 
 SIGN_KB = _kb(["➖ Расход", "➕ Доход"], ["◀️ Назад"])
 
@@ -105,6 +138,22 @@ def _categories_kb(cats: list[dict]) -> ReplyKeyboardMarkup:
     rows.append(["⬜ Без категории"])
     rows.append(["◀️ Назад"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+def _add_category_inline_kb(cats: list[dict]) -> InlineKeyboardMarkup:
+    """Inline keyboard for category selection in the manual add / template flow."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for i, cat in enumerate(cats):
+        cat_id_short = cat["id"].replace("-", "")
+        row.append(InlineKeyboardButton(cat["name"], callback_data=f"add_cat:{cat_id_short}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("⬜ Без категории", callback_data="add_cat:NONE")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def _templates_kb(templates: list[dict]) -> ReplyKeyboardMarkup:
@@ -179,9 +228,7 @@ def _auth(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     return not chat_id or str(update.effective_chat.id) == chat_id
 
 def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ctx.bot_data.get("webhook_started"):
-        return
-    cfg = _cfg(ctx)
+    cfg  = _cfg(ctx)
     mono = cfg.get("MONOBANK_TOKEN")
     if not mono:
         return
@@ -191,7 +238,8 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         mono_token=mono,
         account_id=cfg.get("MONOBANK_ACCOUNT_ID"),
     )
-    ctx.bot_data["webhook_thread"] = t
+    ctx.bot_data["webhook_started"] = True
+    ctx.bot_data["webhook_thread"]  = t
 
 
 # ── Amount display ─────────────────────────────────────────────────────────────
@@ -208,11 +256,12 @@ def _disp_with_type(amount: float) -> str:
 # ── Main menu text ─────────────────────────────────────────────────────────────
 
 def _menu_text(cfg: ConfigManager) -> str:
-    debug = "🔍 включён" if cfg.is_debug() else "🔕 выключен"
+    mode = cfg.get_mode()
+    mode_label = "🔔 Про" if mode == "pro" else "🔇 Тихий"
     return (
         "🏠 <b>Главное меню</b>\n\n"
         "Используй кнопки внизу экрана.\n\n"
-        f"Режим отладки: {debug}"
+        f"Режим: {mode_label}"
     )
 
 async def _main_menu(msg: Message, cfg: ConfigManager) -> None:
@@ -258,23 +307,6 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-async def debug_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _auth(update, ctx):
-        return
-    cfg = _cfg(ctx)
-    on  = cfg.toggle_debug()
-    if on:
-        await update.message.reply_text(
-            "🔍 Режим отладки <b>включён</b>.\n"
-            "Каждая транзакция Monobank → сообщение в чат.\n"
-            "⚠️ /add недоступен.",
-            parse_mode=ParseMode.HTML,
-        )
-    else:
-        await update.message.reply_text(
-            "🔕 Режим отладки <b>выключен</b>.\n✅ /add доступен.",
-            parse_mode=ParseMode.HTML,
-        )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -296,8 +328,9 @@ def _cfg_status(cfg: ConfigManager) -> str:
 async def settings_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update, ctx):
         return ConversationHandler.END
+    cfg = _cfg(ctx)
     await update.message.reply_text(
-        "⚙️ <b>Настройки</b>", parse_mode=ParseMode.HTML, reply_markup=SETTINGS_KB
+        "⚙️ <b>Настройки</b>", parse_mode=ParseMode.HTML, reply_markup=_settings_kb(cfg.get_mode())
     )
     return SETTINGS_MENU
 
@@ -316,7 +349,27 @@ async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         )
         return CONF_MENU
 
-    await update.message.reply_text("Выбери пункт:", reply_markup=SETTINGS_KB)
+    if t == "🔔 Про режим":
+        cfg.set_mode("pro")
+        await update.message.reply_text(
+            "🔔 <b>Про режим включён!</b>\n\n"
+            "Каждая транзакция Monobank → сообщение в чат с выбором категории.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_settings_kb("pro"),
+        )
+        return SETTINGS_MENU
+
+    if t == "🔇 Тихий режим":
+        cfg.set_mode("silent")
+        await update.message.reply_text(
+            "🔇 <b>Тихий режим включён!</b>\n\n"
+            "Транзакции Monobank сохраняются в Notion автоматически, без уведомлений.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_settings_kb("silent"),
+        )
+        return SETTINGS_MENU
+
+    await update.message.reply_text("Выбери пункт:", reply_markup=_settings_kb(cfg.get_mode()))
     return SETTINGS_MENU
 
 
@@ -326,7 +379,7 @@ async def conf_menu_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
 
     if t == "◀️ Назад к настройкам":
         await update.message.reply_text("⚙️ <b>Настройки</b>", parse_mode=ParseMode.HTML,
-                                         reply_markup=SETTINGS_KB)
+                                         reply_markup=_settings_kb(cfg.get_mode()))
         return SETTINGS_MENU
 
     if t == "📋 Выбрать аккаунт Monobank":
@@ -547,12 +600,14 @@ async def _show_category(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, mode: str
         await msg.reply_text(
             f"Шаг {step}/{steps}: Категории не найдены в Notion.\n"
             "Сохраним без категории:",
-            reply_markup=_kb(["⬜ Без категории"], ["◀️ Назад"]),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬜ Без категории", callback_data="add_cat:NONE"),
+            ]]),
         )
     else:
         await msg.reply_text(
             f"Шаг {step}/{steps}: Выбери категорию:",
-            reply_markup=_categories_kb(cats),
+            reply_markup=_add_category_inline_kb(cats),
         )
     return ADD_CATEGORY
 
@@ -561,11 +616,6 @@ async def _show_category(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, mode: str
 
 async def add_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update, ctx):
-        return ConversationHandler.END
-    if _cfg(ctx).is_debug():
-        await update.message.reply_text(
-            "⚠️ /add недоступен в режиме отладки.\nВыключи его через /debug."
-        )
         return ConversationHandler.END
     ctx.user_data.clear()
     ctx.user_data["mode"] = "add"
@@ -676,7 +726,7 @@ async def add_custom_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         return await _show_time(update.message)
 
     try:
-        ctx.user_data["add_dt"] = datetime.strptime(t, "%d.%m.%Y %H:%M")
+        ctx.user_data["add_dt"] = datetime.strptime(t, "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
     except ValueError:
         await update.message.reply_text(
             "❌ Неверный формат. Пример: <code>03.04.2025 14:30</code>",
@@ -701,36 +751,35 @@ async def add_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return await _show_category(update.message, ctx, mode)
 
 
-async def add_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    t    = update.message.text.strip()
+async def add_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
     mode = ctx.user_data.get("mode", "add")
 
-    if t == "◀️ Назад":
-        return await _show_category(update.message, ctx, mode)
+    raw = query.data[len("add_cat:"):]  # everything after "add_cat:"
 
-    _, cat_map    = await _load_cats(ctx)
-    category_id   = None
-    category_name = "—"
-
-    if t != "⬜ Без категории":
-        cid = cat_map.get(t)
-        if not cid:
-            cats, _ = await _load_cats(ctx)
-            await update.message.reply_text(
-                "Выбери категорию из списка:", reply_markup=_categories_kb(cats) if cats
-                else _kb(["⬜ Без категории"], ["◀️ Назад"])
-            )
-            return ADD_CATEGORY
-        category_id   = cid
-        category_name = t
+    if raw == "NONE":
+        category_id   = None
+        category_name = "—"
+    else:
+        # Restore dashes into UUID format (8-4-4-4-12)
+        h = raw
+        full_id = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+        cats, _ = await _load_cats(ctx)
+        matched = next((c for c in cats if c["id"].replace("-", "") == raw), None)
+        category_id   = full_id
+        category_name = matched["name"] if matched else full_id
 
     ctx.user_data["add_cat_id"]   = category_id
     ctx.user_data["add_cat_name"] = category_name
 
+    # Remove the inline keyboard so the step message stays clean
+    await query.edit_message_reply_markup(reply_markup=None)
+
     if mode == "template":
-        return await _finalize_template(update.message, ctx)
+        return await _finalize_template(query.message, ctx)
     else:
-        return await _finalize_add(update.message, ctx)
+        return await _finalize_add(query.message, ctx)
 
 
 # ── Finalize helpers ───────────────────────────────────────────────────────────
@@ -877,7 +926,7 @@ def make_add_handler() -> ConversationHandler:
             ADD_TIME_CHOICE:  [MessageHandler(_TXT, add_time_choice)],
             ADD_CUSTOM_TIME:  [MessageHandler(_TXT, add_custom_time)],
           # ADD_NOTES:        [MessageHandler(_TXT, add_notes)],
-            ADD_CATEGORY:     [MessageHandler(_TXT, add_category)],
+            ADD_CATEGORY:     [CallbackQueryHandler(add_category_callback, pattern=r"^add_cat:")],
             ADD_SAVE_CONFIRM: [MessageHandler(_TXT, add_save_confirm)],
             ADD_TPL_NAME:     [MessageHandler(_TXT, add_tpl_name)],
         },
@@ -1041,7 +1090,7 @@ async def tpl_custom_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         return TPL_USE_TIME
 
     try:
-        dt = datetime.strptime(t, "%d.%m.%Y %H:%M")
+        dt = datetime.strptime(t, "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
     except ValueError:
         await update.message.reply_text(
             "❌ Неверный формат. Пример: <code>03.04.2025 14:30</code>",
@@ -1328,10 +1377,71 @@ def make_templates_handler() -> ConversationHandler:
 # Webhook queue processor
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _build_category_inline_kb(txn_id: str, cats: list[dict]) -> InlineKeyboardMarkup:
+    """Build inline keyboard with category buttons + No Category + Later."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for i, cat in enumerate(cats):
+        # Strip hyphens from Notion page IDs so callback_data stays ≤ 64 bytes
+        cat_id_short = cat["id"].replace("-", "")
+        row.append(InlineKeyboardButton(
+            cat["name"],
+            callback_data=f"cat:{txn_id}:{cat_id_short}",
+        ))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([
+        InlineKeyboardButton("⬜ Без категории", callback_data=f"cat:{txn_id}:NONE"),
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def _fetch_cats(ctx: ContextTypes.DEFAULT_TYPE) -> list[dict]:
+    """Return categories for the Pro-mode inline keyboard.
+
+    Loads from Notion and caches in bot_data for 5 minutes.
+    On failure keeps the previous cached value (never poisons cache with empty list).
+    """
+    import time as _time
+    now = _time.monotonic()
+    age = now - ctx.bot_data.get("cats_cache_ts", 0)
+
+    if age > 300 or "cats_cache" not in ctx.bot_data:
+        notion = _notion(ctx)
+        if not notion:
+            logger.error("_fetch_cats: Notion не настроен (проверь NOTION_API_KEY / DB IDs в /config)")
+        else:
+            fetched = await asyncio.to_thread(notion.get_categories)
+            if fetched:
+                ctx.bot_data["cats_cache"]    = fetched
+                ctx.bot_data["cats_cache_ts"] = now
+                ctx.bot_data["cats_id_map"]   = {
+                    c["id"].replace("-", ""): c["id"] for c in fetched
+                }
+                logger.info("_fetch_cats: загружено %d категорий из Notion", len(fetched))
+            else:
+                logger.warning("_fetch_cats: Notion вернул пустой список категорий")
+
+    return ctx.bot_data.get("cats_cache", [])
+
+
 async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cfg     = _cfg(ctx)
     chat_id = cfg.get("TELEGRAM_CHAT_ID")
-    debug   = cfg.is_debug()
+
+    if not chat_id:
+        # Drain silently — no chat configured yet
+        while not webhook_queue.empty():
+            try:
+                webhook_queue.get_nowait()
+            except Exception:
+                break
+        return
+
+    mode = cfg.get_mode()
 
     while not webhook_queue.empty():
         try:
@@ -1339,23 +1449,131 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception:
             break
 
-        notion = _notion(ctx)
-        if notion:
-            desc   = item.get("description", "Транзакция")
-            amount = item.get("amount", 0) / 100
-            dt     = datetime.fromtimestamp(item.get("time", 0), tz=timezone.utc)
-            await asyncio.to_thread(notion.create_transaction, desc, -amount, dt)
+        if mode == "silent":
+            # ── Silent mode: save straight to Notion, no Telegram notification ──
+            notion = _notion(ctx)
+            if notion:
+                desc   = item.get("description", "Транзакция")
+                amount = item.get("amount", 0) / 100
+                dt     = datetime.fromtimestamp(item.get("time", 0), tz=timezone.utc)
+                saved  = await asyncio.to_thread(
+                    notion.create_transaction, desc, -amount, dt, None
+                )
+                if saved:
+                    logger.info("Silent: saved '%s' %.2f UAH to Notion", desc, amount)
+                else:
+                    logger.warning("Silent: failed to save '%s' to Notion", desc)
+            else:
+                logger.warning("Silent: Notion not configured — transaction dropped")
 
-        if debug and chat_id:
+        else:
+            # ── Pro mode: send message + inline category buttons ──────────────
+            # Notion save happens ONLY when user selects a category (handle_category_callback).
+            cats = await _fetch_cats(ctx)
+            logger.info("Pro: building keyboard with %d categories", len(cats))
+
+            text     = format_transaction_message(item)
+            txn_id   = _pending_store.add(item, chat_id, text)
+            keyboard = _build_category_inline_kb(txn_id, cats)
+
             bot: Bot = ctx.bot
             try:
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=format_transaction_message(item),
+                    text=text,
                     parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+                logger.info(
+                    "Pro: sent '%s' %.2f UAH — waiting for category selection",
+                    item.get("description", "?"),
+                    abs(item.get("amount", 0) / 100),
                 )
             except Exception as exc:
-                logger.error("Failed to send webhook message: %s", exc)
+                logger.error("Pro: failed to send webhook message: %s", exc)
+                _pending_store.remove(txn_id)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Category callback handler (inline buttons on transaction messages)
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline button presses on transaction messages."""
+    query = update.callback_query
+    await query.answer()
+
+    # callback_data format: "cat:{txn_id}:{cat_id_or_NONE}"
+    parts = query.data.split(":", 2)
+    if len(parts) != 3:
+        return
+    _, txn_id, cat_choice = parts
+
+    pending = _pending_store.get(txn_id)
+    if not pending:
+        # Already processed (e.g. duplicate tap)
+        await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    item = pending["item"]
+    original_text = pending.get("text", "")
+
+    notion = _notion(ctx)
+    saved = False
+    if notion:
+        desc   = item.get("description", "Транзакция")
+        amount = item.get("amount", 0) / 100
+        dt     = datetime.fromtimestamp(item.get("time", 0), tz=timezone.utc)
+
+        category_id: Optional[str] = None
+        cat_display = "без категории"
+
+        if cat_choice != "NONE":
+            # Restore hyphens: Notion expects UUID format
+            raw = cat_choice
+            if len(raw) == 32:
+                cat_choice_uuid = f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+            else:
+                cat_choice_uuid = raw
+            category_id = cat_choice_uuid
+
+            # Find display name from cache
+            cats: list[dict] = ctx.bot_data.get("cats_cache", [])
+            match = next((c for c in cats if c["id"].replace("-", "") == raw), None)
+            cat_display = match["name"] if match else "категория"
+
+        saved = await asyncio.to_thread(
+            notion.create_transaction, desc, -amount, dt, category_id
+        )
+
+    _pending_store.remove(txn_id)
+
+    status_line = "✅ <b>Сохранено в Notion</b>"
+    if saved and cat_choice != "NONE":
+        status_line += f" · {cat_display}"
+    elif not saved:
+        status_line = "⚠️ <b>Ошибка сохранения в Notion</b>"
+
+    if saved and category_id and notion:
+        try:
+            await asyncio.sleep(0.7)
+            remaining = await asyncio.wait_for(
+                asyncio.to_thread(notion.get_category_remaining, category_id),
+                timeout=5,
+            )
+            if remaining is not None:
+                status_line += f"\n💼 На месяц осталось по категории: {remaining:,.2f} ₴"
+        except Exception as exc:
+            logger.warning("Could not fetch category remaining: %s", exc)
+
+    try:
+        await query.edit_message_text(
+            original_text + f"\n\n{status_line}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None,
+        )
+    except Exception as exc:
+        logger.error("Failed to edit message after category save: %s", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
