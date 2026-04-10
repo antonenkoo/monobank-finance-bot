@@ -221,6 +221,7 @@ def _notion(ctx: ContextTypes.DEFAULT_TYPE) -> Optional[NotionService]:
         api_key=cfg.get("NOTION_API_KEY"),
         transactions_db_id=cfg.get("NOTION_TRANSACTIONS_DB_ID"),
         categories_db_id=cfg.get("NOTION_CATEGORIES_DB_ID"),
+        remaining_prop=cfg.get("NOTION_REMAINING_PROP", "Remaining"),
     )
 
 def _auth(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -826,12 +827,17 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if success and cid:
         try:
             await asyncio.sleep(0.7)
-            remaining = await asyncio.wait_for(
-                asyncio.to_thread(notion.get_category_remaining, cid),
-                timeout=5,
+            cat_rem, total_rem = await asyncio.wait_for(
+                asyncio.gather(
+                    asyncio.to_thread(notion.get_category_remaining, cid),
+                    asyncio.to_thread(notion.get_total_remaining),
+                ),
+                timeout=8,
             )
-            if remaining is not None:
-                remaining_text = f"\n💼 На месяц осталось по категории: {remaining:,.2f} ₴"
+            if cat_rem is not None:
+                remaining_text = f"\n💼 На месяц осталось по категории: {cat_rem:,.2f} ₴"
+            if total_rem is not None:
+                remaining_text += f"\n💰 Всего в бюджете осталось: {total_rem:,.2f} ₴"
         except Exception as e:
             logger.exception("Failed to get category remaining: %s", e)
             remaining_text = "\n💼 Остаток по категории пока не удалось получить"
@@ -1121,12 +1127,14 @@ async def _apply_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, dt: date
 
         if success and tpl.get("category_id"):
             await asyncio.sleep(0.7)
-            remaining = await asyncio.to_thread(
-                notion.get_category_remaining,
-                tpl["category_id"],
+            cat_rem, total_rem = await asyncio.gather(
+                asyncio.to_thread(notion.get_category_remaining, tpl["category_id"]),
+                asyncio.to_thread(notion.get_total_remaining),
             )
-            if remaining is not None:
-                remaining_text = f"\n💼 На месяц осталось по категории: {remaining:,.2f} ₴"
+            if cat_rem is not None:
+                remaining_text = f"\n💼 На месяц осталось по категории: {cat_rem:,.2f} ₴"
+            if total_rem is not None:
+                remaining_text += f"\n💰 Всего в бюджете осталось: {total_rem:,.2f} ₴"
 
     if success:
         await msg.reply_text(
@@ -1557,12 +1565,17 @@ async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
     if saved and category_id and notion:
         try:
             await asyncio.sleep(0.7)
-            remaining = await asyncio.wait_for(
-                asyncio.to_thread(notion.get_category_remaining, category_id),
-                timeout=5,
+            cat_rem, total_rem = await asyncio.wait_for(
+                asyncio.gather(
+                    asyncio.to_thread(notion.get_category_remaining, category_id),
+                    asyncio.to_thread(notion.get_total_remaining),
+                ),
+                timeout=8,
             )
-            if remaining is not None:
-                status_line += f"\n💼 На месяц осталось по категории: {remaining:,.2f} ₴"
+            if cat_rem is not None:
+                status_line += f"\n💼 На месяц осталось по категории: {cat_rem:,.2f} ₴"
+            if total_rem is not None:
+                status_line += f"\n💰 Всего в бюджете осталось: {total_rem:,.2f} ₴"
         except Exception as exc:
             logger.warning("Could not fetch category remaining: %s", exc)
 

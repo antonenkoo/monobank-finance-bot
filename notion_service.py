@@ -36,10 +36,12 @@ class NotionService:
         api_key:            str,
         transactions_db_id: str,
         categories_db_id:   str,
+        remaining_prop:     str = "Remaining",
     ) -> None:
         self.api_key            = api_key
         self.transactions_db_id = transactions_db_id.replace("-", "")
         self.categories_db_id   = categories_db_id.replace("-", "")
+        self.remaining_prop     = remaining_prop or "Remaining"
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
@@ -97,18 +99,9 @@ class NotionService:
         logger.info("Loaded %d categories from Notion", len(categories))
         return categories
     
-    def get_category_remaining(self, category_id: str) -> float | None:
-        result = self._request("GET", f"/pages/{category_id}")
-        if not result:
-            return None
-
-        prop = result.get("properties", {}).get("Remaining")
-        if not prop:
-            logger.warning("Remaining property not found for category %s", category_id)
-            return None
-
+    def _parse_remaining_prop(self, prop: dict) -> float | None:
+        """Extract a numeric remaining value from any supported Notion property type."""
         ptype = prop.get("type")
-        logger.info("Remaining property type for %s: %s", category_id, ptype)
 
         if ptype == "number":
             return prop.get("number")
@@ -116,10 +109,8 @@ class NotionService:
         if ptype == "formula":
             formula = prop.get("formula", {})
             ftype = formula.get("type")
-
             if ftype == "number":
                 return formula.get("number")
-
             if ftype == "string":
                 value = formula.get("string")
                 if not value:
@@ -133,21 +124,63 @@ class NotionService:
                     )
                     return float(cleaned)
                 except ValueError:
-                    logger.warning("Could not parse Remaining formula string: %r", value)
+                    logger.warning("Could not parse remaining formula string: %r", value)
                     return None
 
         if ptype == "rollup":
             rollup = prop.get("rollup", {})
-            rtype = rollup.get("type")
-
-            if rtype == "number":
+            if rollup.get("type") == "number":
                 return rollup.get("number")
-
-            logger.warning("Unsupported rollup type for Remaining: %s", rtype)
+            logger.warning("Unsupported rollup type for remaining: %s", rollup.get("type"))
             return None
 
-        logger.warning("Unsupported Remaining property type: %s", ptype)
+        logger.warning("Unsupported remaining property type: %s", ptype)
         return None
+
+    def get_category_remaining(self, category_id: str) -> float | None:
+        result = self._request("GET", f"/pages/{category_id}")
+        if not result:
+            return None
+
+        prop = result.get("properties", {}).get(self.remaining_prop)
+        if not prop:
+            logger.warning("Property '%s' not found for category %s", self.remaining_prop, category_id)
+            return None
+
+        logger.info("Remaining property type for %s: %s", category_id, prop.get("type"))
+        return self._parse_remaining_prop(prop)
+
+    def get_total_remaining(self) -> float | None:
+        """Return sum of remaining amounts across all categories."""
+        total = 0.0
+        found_any = False
+        cursor: Optional[str] = None
+
+        while True:
+            body: dict = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+
+            result = self._request(
+                "POST", f"/databases/{self.categories_db_id}/query", body
+            )
+            if not result:
+                break
+
+            for page in result.get("results", []):
+                prop = page.get("properties", {}).get(self.remaining_prop)
+                if prop:
+                    val = self._parse_remaining_prop(prop)
+                    if val is not None:
+                        total += val
+                        found_any = True
+
+            if result.get("has_more") and result.get("next_cursor"):
+                cursor = result["next_cursor"]
+            else:
+                break
+
+        return total if found_any else None
         
     # ── Transactions ──────────────────────────────────────────────────────────
 
