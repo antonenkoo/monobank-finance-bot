@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION    = "1.2"
+BOT_VERSION    = "1.2.1"
 
 ENV_PATH       = Path(".env")
 TEMPLATES_PATH = Path("templates.json")
@@ -134,6 +134,13 @@ class ConfigManager:
     def set_mode(self, mode: str) -> None:
         """Persist operating mode: 'silent' or 'pro'."""
         self.set("BOT_MODE", mode)
+
+    def get_notes_enabled(self) -> bool:
+        """Return True if the card-transaction notes step is enabled (default: on)."""
+        return self.get("CARD_NOTES_ENABLED", "on").strip().lower() == "on"
+
+    def set_notes_enabled(self, enabled: bool) -> None:
+        self.set("CARD_NOTES_ENABLED", "on" if enabled else "off")
 
     def get_webhook_port(self) -> int:
         return int(self.get("WEBHOOK_PORT", "8080"))

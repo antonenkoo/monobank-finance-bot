@@ -50,13 +50,44 @@ class PendingTransactionStore:
         txn_id = str(uuid.uuid4())[:8]
         data = self._read()
         data[txn_id] = {
-            "item": item,
-            "chat_id": chat_id,
-            "text": formatted_text,
+            "item":        item,
+            "chat_id":     chat_id,
+            "text":        formatted_text,
+            "state":       "selecting",   # "selecting" | "awaiting_notes"
+            "message_id":  None,          # set after message is sent
+            "category_id": None,
+            "cat_display": "",
         }
         self._write(data)
         logger.debug("Pending txn stored: %s (%s)", txn_id, item.get("description", "?"))
         return txn_id
+
+    def set_message_id(self, txn_id: str, message_id: int) -> None:
+        """Store the Telegram message_id so we can edit it later."""
+        data = self._read()
+        if txn_id in data:
+            data[txn_id]["message_id"] = message_id
+            self._write(data)
+
+    def update_for_notes(
+        self, txn_id: str, category_id: Optional[str], cat_display: str
+    ) -> None:
+        """Transition to awaiting_notes state after the user picked a category."""
+        data = self._read()
+        if txn_id in data:
+            data[txn_id]["state"]       = "awaiting_notes"
+            data[txn_id]["category_id"] = category_id
+            data[txn_id]["cat_display"] = cat_display
+            self._write(data)
+
+    def get_awaiting_notes_by_chat(self, chat_id: str) -> Optional[tuple]:
+        """Return (txn_id, pending_data) for the first transaction awaiting notes."""
+        data = self._read()
+        for txn_id, pending in data.items():
+            if (pending.get("chat_id") == str(chat_id)
+                    and pending.get("state") == "awaiting_notes"):
+                return txn_id, pending
+        return None
 
     def get(self, txn_id: str) -> Optional[dict]:
         return self._read().get(txn_id)
