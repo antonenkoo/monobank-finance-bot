@@ -52,11 +52,27 @@ _pending_store = PendingTransactionStore()
 
 # ── Startup messages ───────────────────────────────────────────────────────────
 _STARTUP_MESSAGES = [
-    "🚀 <b>Monobank Finance Bot запущен!</b>\nСлушаю webhook и жду твои транзакции 👀",
-    "💰 <b>Бот снова в строю!</b>\nГотов ловить расходы и нести их в Notion 📊",
-    "🤖 <b>Я здесь!</b>\nWebhook Monobank подключён. Деньгам не скрыться! 💸",
-    "📡 <b>Сервер запущен.</b>\nMono поглядываю — Notion жду. Поехали! 🏎",
-    "🔔 <b>Финансовый страж на посту!</b>\nКаждая гривна будет записана в Notion ✅",
+    "🚀 <b>Бот запущен!</b>\nWebhook слушает. Notion записывает. Кошелёк плачет.",
+    "💸 <b>Я вернулся.</b>\nТвои финансовые грехи снова под моим контролем. Начнём.",
+    "🤖 <b>Онлайн.</b>\nЛовлю транзакции, несу в Notion, пью чай. Жизнь удалась.",
+    "🌝 <b>Тихо вышел из тени.</b>\nWebhook подключён. Каждая трата записана с невозмутимым спокойствием.",
+    "🎯 <b>Финансовый снайпер на позиции.</b>\nМоно дёрнулся — я уже записал. Notion доволен.",
+    "💎💸 <b>YOLO FINANCE BOT ACTIVATED SIS</b> 💸💎\nWebhook is bussin fr fr ngl. Notion secured. We vibin. 🔥",
+    "🦾 <b>Бот в строю.</b>\nВсе системы запущены. Траты защищены от амнезии. Пока.",
+    "😈 <b>Запущен.</b>\nСледить за расходами — моя работа. Осуждать — моё хобби.",
+    "🔇 <b>Тихий запуск.</b>\nНикто ничего не заметил. Транзакции тоже. Ладно, шучу — Notion увидел всё.",
+    "🥵 <b>Горячий рестарт!</b>\nWebhook задышал, Notion открыт. Поехали транжирить.",
+    "🕵️ <b>Слежка возобновлена.</b>\nКаждая гривна под наблюдением. Это не угроза — это фича.",
+    "💼 <b>Рабочее место занято.</b>\nТвои траты сами себя не запишут. Почти.",
+    "🫀 <b>Живой.</b>\nWebhook бьётся. Notion дышит. Кошелёк стонет.",
+    "🎯 <b>На связи.</b>\nТраты — фиксирую. Осуждать — по настроению, но обычно да.",
+    "🫠 <b>Всё хорошо.</b>\nWebhook работает. Notion пишет. Бот не спит. Всё хорошо.",
+    "🎪 <b>Шоу продолжается.</b>\nКаждая транзакция — новый эпизод. Ты главный герой. Бюджет — злодей.",
+    "😏 <b>Снова вместе.</b>\nСоскучился по твоим транзакциям. Не притворяйся что ты нет.",
+    "👀 <b>Наблюдаю за каждым твоим движением.</b>\nФинансовым. Исключительно финансовым.",
+    "🥵 <b>Готов принять всё что придёт.</b>\nТранзакции. Webhook открыт, Notion ждёт.",
+    "💦 <b>Webhook готов.</b>\nNotion разогрет. Бот возбуждён... к работе. Поехали.",
+    "🍑 <b>Горячий старт.</b>\nWebhook поднят. Я всегда готов — в отличие от некоторых бюджетов.",
 ]
 
 
@@ -68,6 +84,7 @@ async def send_startup_message(bot: Bot, chat_id: str) -> None:
             chat_id=chat_id,
             text=text,
             parse_mode=ParseMode.HTML,
+            reply_markup=MAIN_KB,
         )
     except Exception as exc:
         logger.error("Failed to send startup message: %s", exc)
@@ -84,10 +101,11 @@ def _kb(*rows: list[str], one_time: bool = False) -> ReplyKeyboardMarkup:
 
 MAIN_KB = _kb(["➕ Добавить", "📋 Шаблоны"], ["⚙️ Настройки"])
 
-def _settings_kb(mode: str) -> ReplyKeyboardMarkup:
-    """Settings menu keyboard with mode-toggle button showing the opposite mode."""
-    toggle = "🔔 Про режим" if mode == "silent" else "🔇 Тихий режим"
-    return _kb(["⚙️ Конфигурация"], [toggle], ["◀️ Назад"])
+def _settings_kb(mode: str, notes: bool = True) -> ReplyKeyboardMarkup:
+    """Settings menu keyboard with mode-toggle and notes-toggle buttons."""
+    mode_toggle  = "🔔 Про режим"  if mode  == "silent" else "🔇 Тихий режим"
+    notes_toggle = "💬 Заметки: вкл" if notes else "💬 Заметки: выкл"
+    return _kb(["⚙️ Конфигурация"], [mode_toggle], [notes_toggle], ["◀️ Назад"])
 
 SIGN_KB = _kb(["➖ Расход", "➕ Доход"], ["◀️ Назад"])
 
@@ -331,7 +349,8 @@ async def settings_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     cfg = _cfg(ctx)
     await update.message.reply_text(
-        "⚙️ <b>Настройки</b>", parse_mode=ParseMode.HTML, reply_markup=_settings_kb(cfg.get_mode())
+        "⚙️ <b>Настройки</b>", parse_mode=ParseMode.HTML,
+        reply_markup=_settings_kb(cfg.get_mode(), cfg.get_notes_enabled())
     )
     return SETTINGS_MENU
 
@@ -339,6 +358,9 @@ async def settings_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t   = update.message.text.strip()
     cfg = _cfg(ctx)
+
+    def _kb_now() -> ReplyKeyboardMarkup:
+        return _settings_kb(cfg.get_mode(), cfg.get_notes_enabled())
 
     if t == "◀️ Назад":
         await _main_menu(update.message, cfg)
@@ -356,7 +378,7 @@ async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
             "🔔 <b>Про режим включён!</b>\n\n"
             "Каждая транзакция Monobank → сообщение в чат с выбором категории.",
             parse_mode=ParseMode.HTML,
-            reply_markup=_settings_kb("pro"),
+            reply_markup=_kb_now(),
         )
         return SETTINGS_MENU
 
@@ -366,11 +388,31 @@ async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
             "🔇 <b>Тихий режим включён!</b>\n\n"
             "Транзакции Monobank сохраняются в Notion автоматически, без уведомлений.",
             parse_mode=ParseMode.HTML,
-            reply_markup=_settings_kb("silent"),
+            reply_markup=_kb_now(),
         )
         return SETTINGS_MENU
 
-    await update.message.reply_text("Выбери пункт:", reply_markup=_settings_kb(cfg.get_mode()))
+    if t == "💬 Заметки: вкл":
+        cfg.set_notes_enabled(False)
+        await update.message.reply_text(
+            "💬 <b>Заметки отключены.</b>\n\n"
+            "Транзакции по карте сохраняются сразу после выбора категории.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_kb_now(),
+        )
+        return SETTINGS_MENU
+
+    if t == "💬 Заметки: выкл":
+        cfg.set_notes_enabled(True)
+        await update.message.reply_text(
+            "💬 <b>Заметки включены.</b>\n\n"
+            "После выбора категории бот попросит добавить заметку к транзакции.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_kb_now(),
+        )
+        return SETTINGS_MENU
+
+    await update.message.reply_text("Выбери пункт:", reply_markup=_kb_now())
     return SETTINGS_MENU
 
 
@@ -380,7 +422,7 @@ async def conf_menu_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
 
     if t == "◀️ Назад к настройкам":
         await update.message.reply_text("⚙️ <b>Настройки</b>", parse_mode=ParseMode.HTML,
-                                         reply_markup=_settings_kb(cfg.get_mode()))
+                                         reply_markup=_settings_kb(cfg.get_mode(), cfg.get_notes_enabled()))
         return SETTINGS_MENU
 
     if t == "📋 Выбрать аккаунт Monobank":
@@ -1404,6 +1446,9 @@ def _build_category_inline_kb(txn_id: str, cats: list[dict]) -> InlineKeyboardMa
     buttons.append([
         InlineKeyboardButton("⬜ Без категории", callback_data=f"cat:{txn_id}:NONE"),
     ])
+    buttons.append([
+        InlineKeyboardButton("❌ Не сохранять", callback_data=f"skip_txn:{txn_id}"),
+    ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -1486,12 +1531,13 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
             bot: Bot = ctx.bot
             try:
-                await bot.send_message(
+                sent = await bot.send_message(
                     chat_id=chat_id,
                     text=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=keyboard,
                 )
+                _pending_store.set_message_id(txn_id, sent.message_id)
                 logger.info(
                     "Pro: sent '%s' %.2f UAH — waiting for category selection",
                     item.get("description", "?"),
@@ -1507,11 +1553,10 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle inline button presses on transaction messages."""
+    """User picked a category → transition to notes step."""
     query = update.callback_query
     await query.answer()
 
-    # callback_data format: "cat:{txn_id}:{cat_id_or_NONE}"
     parts = query.data.split(":", 2)
     if len(parts) != 3:
         return
@@ -1519,48 +1564,145 @@ async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     pending = _pending_store.get(txn_id)
     if not pending:
-        # Already processed (e.g. duplicate tap)
         await query.edit_message_reply_markup(reply_markup=None)
         return
 
-    item = pending["item"]
+    # Resolve category
+    category_id: Optional[str] = None
+    cat_display = "без категории"
+
+    if cat_choice != "NONE":
+        raw = cat_choice
+        if len(raw) == 32:
+            cat_choice_uuid = f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+        else:
+            cat_choice_uuid = raw
+        category_id = cat_choice_uuid
+        cats: list[dict] = ctx.bot_data.get("cats_cache", [])
+        match = next((c for c in cats if c["id"].replace("-", "") == raw), None)
+        cat_display = match["name"] if match else "категория"
+
+    # Store chosen category
+    _pending_store.update_for_notes(txn_id, category_id, cat_display)
+    updated_pending = _pending_store.get(txn_id) or pending
+
+    # If notes step is disabled → save immediately, no extra prompt
+    if not _cfg(ctx).get_notes_enabled():
+        await _save_card_txn(query=query, ctx=ctx, txn_id=txn_id,
+                             pending=updated_pending, notes="")
+        return
+
+    # Notes step enabled → ask for a note
     original_text = pending.get("text", "")
+    cat_label = f"🏷 {cat_display}" if cat_display != "без категории" else "⬜ Без категории"
+
+    notes_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Сохранить без заметки", callback_data=f"notes_skip:{txn_id}")],
+        [InlineKeyboardButton("❌ Не сохранять", callback_data=f"skip_txn:{txn_id}")],
+    ])
+    try:
+        await query.edit_message_text(
+            original_text + f"\n\n{cat_label}\n\n💬 <i>Добавь заметку или пропусти:</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=notes_kb,
+        )
+    except Exception as exc:
+        logger.error("Failed to edit message for notes prompt: %s", exc)
+
+
+async def handle_skip_txn_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User explicitly chose NOT to save the transaction."""
+    query = update.callback_query
+    await query.answer()
+
+    txn_id  = query.data.split(":", 1)[1]
+    pending = _pending_store.get(txn_id)
+    _pending_store.remove(txn_id)
+
+    original_text = (pending or {}).get("text", "")
+    try:
+        await query.edit_message_text(
+            original_text + "\n\n❌ <b>Не сохранено</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None,
+        )
+    except Exception as exc:
+        logger.error("Failed to edit message after skip: %s", exc)
+
+
+async def handle_notes_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User chose to save without a note."""
+    query = update.callback_query
+    await query.answer()
+
+    txn_id  = query.data.split(":", 1)[1]
+    pending = _pending_store.get(txn_id)
+    if not pending:
+        await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    await _save_card_txn(query=query, ctx=ctx, txn_id=txn_id, pending=pending, notes="")
+
+
+async def handle_card_notes_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Group -1 handler: intercepts text messages when a card transaction is
+    awaiting a user note.  Does nothing (lets message fall to group 0) if no
+    such pending transaction exists for this chat.
+    """
+    from telegram.ext import ApplicationHandlerStop
+
+    chat_id = str(update.effective_chat.id)
+    result  = _pending_store.get_awaiting_notes_by_chat(chat_id)
+    if not result:
+        return  # nothing pending — let ConversationHandler see this message
+
+    txn_id, pending = result
+    notes = update.message.text.strip()
+
+    # Try to delete the user's note message to keep the chat tidy
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    await _save_card_txn(query=None, ctx=ctx, txn_id=txn_id, pending=pending, notes=notes,
+                         bot=ctx.bot, chat_id=chat_id)
+    raise ApplicationHandlerStop  # prevent ConversationHandler from seeing this
+
+
+async def _save_card_txn(
+    query,                          # CallbackQuery | None
+    ctx:    ContextTypes.DEFAULT_TYPE,
+    txn_id: str,
+    pending: dict,
+    notes:  str,
+    bot=None,                       # required when query is None
+    chat_id: str = "",
+) -> None:
+    """Save a card transaction to Notion and edit the original message with the result."""
+    item        = pending["item"]
+    category_id = pending.get("category_id")
+    cat_display = pending.get("cat_display", "без категории")
+    original_text = pending.get("text", "")
+    message_id  = pending.get("message_id")
+
+    desc   = item.get("description", "Транзакция")
+    amount = item.get("amount", 0) / 100
+    dt     = datetime.fromtimestamp(item.get("time", 0), tz=timezone.utc)
 
     notion = _notion(ctx)
-    saved = False
+    saved  = False
     if notion:
-        desc   = item.get("description", "Транзакция")
-        amount = item.get("amount", 0) / 100
-        dt     = datetime.fromtimestamp(item.get("time", 0), tz=timezone.utc)
-
-        category_id: Optional[str] = None
-        cat_display = "без категории"
-
-        if cat_choice != "NONE":
-            # Restore hyphens: Notion expects UUID format
-            raw = cat_choice
-            if len(raw) == 32:
-                cat_choice_uuid = f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
-            else:
-                cat_choice_uuid = raw
-            category_id = cat_choice_uuid
-
-            # Find display name from cache
-            cats: list[dict] = ctx.bot_data.get("cats_cache", [])
-            match = next((c for c in cats if c["id"].replace("-", "") == raw), None)
-            cat_display = match["name"] if match else "категория"
-
         saved = await asyncio.to_thread(
-            notion.create_transaction, desc, -amount, dt, category_id
+            notion.create_transaction, desc, -amount, dt, category_id, notes
         )
 
     _pending_store.remove(txn_id)
 
-    status_line = "✅ <b>Сохранено в Notion</b>"
-    if saved and cat_choice != "NONE":
-        status_line += f" · {cat_display}"
-    elif not saved:
-        status_line = "⚠️ <b>Ошибка сохранения в Notion</b>"
+    cat_label   = f"🏷 {cat_display}" if cat_display != "без категории" else "⬜ Без категории"
+    note_label  = f"\n💬 {notes}" if notes else ""
+    status_line = "✅ <b>Сохранено в Notion</b>" if saved else "⚠️ <b>Ошибка сохранения в Notion</b>"
 
     if saved and category_id and notion:
         try:
@@ -1579,14 +1721,21 @@ async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         except Exception as exc:
             logger.warning("Could not fetch category remaining: %s", exc)
 
-    try:
-        await query.edit_message_text(
-            original_text + f"\n\n{status_line}",
-            parse_mode=ParseMode.HTML,
-            reply_markup=None,
-        )
-    except Exception as exc:
-        logger.error("Failed to edit message after category save: %s", exc)
+    result_text = original_text + f"\n\n{cat_label}{note_label}\n\n{status_line}"
+
+    if query:
+        try:
+            await query.edit_message_text(result_text, parse_mode=ParseMode.HTML, reply_markup=None)
+        except Exception as exc:
+            logger.error("Failed to edit message after save: %s", exc)
+    elif bot and message_id and chat_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=result_text, parse_mode=ParseMode.HTML, reply_markup=None,
+            )
+        except Exception as exc:
+            logger.error("Failed to edit message after notes save: %s", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -7,11 +7,14 @@ import logging
 import sys
 
 from telegram import BotCommand
-from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot_handlers import (
     cancel_handler,
+    handle_card_notes_text,
     handle_category_callback,
+    handle_notes_skip_callback,
+    handle_skip_txn_callback,
     make_add_handler,
     make_settings_handler,
     make_templates_handler,
@@ -102,12 +105,21 @@ def main() -> None:
 
     _start_webhook(cfg, app.bot_data)
 
+    # Card-notes text handler runs BEFORE ConversationHandlers (group -1)
+    # so it can intercept the user's note input without breaking other flows.
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_card_notes_text),
+        group=-1,
+    )
+
     # Handlers
     app.add_handler(make_settings_handler())
     app.add_handler(make_add_handler())
     app.add_handler(make_templates_handler())
     app.add_handler(CommandHandler("cancel", cancel_handler))
     app.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^cat:"))
+    app.add_handler(CallbackQueryHandler(handle_skip_txn_callback,   pattern=r"^skip_txn:"))
+    app.add_handler(CallbackQueryHandler(handle_notes_skip_callback, pattern=r"^notes_skip:"))
 
     # Periodic webhook queue drain
     app.job_queue.run_repeating(
