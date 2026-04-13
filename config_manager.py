@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION    = "1.4.0"
+BOT_VERSION    = "1.4.1"
 
 ENV_PATH       = Path(".env")
 TEMPLATES_PATH = Path("templates.json")
@@ -32,6 +32,7 @@ FIELD_LABELS: dict[str, str] = {
     "WEBHOOK_PORT":              "Webhook Port",
     "NOTION_REMAINING_PROP":     "Notion Column Name With Remaining Amount",
     "NOTION_LIMIT_PROP":         "Notion Column Name With Monthly Limit",
+    "DEVELOPER_FEEDBACK_URL":    "Developer Feedback URL (ngrok)",
 }
 
 FIELD_HINTS: dict[str, str] = {
@@ -62,6 +63,11 @@ FIELD_HINTS: dict[str, str] = {
         "Название колонки с лимитом расходов на месяц для каждой категории.\n"
         "Используется для уведомлений о достижении лимита."
     ),
+    "DEVELOPER_FEEDBACK_URL": (
+        "Ngrok URL разработчика для отправки фидбека.\n"
+        "Пример: https://mark-dev.ngrok-free.app\n"
+        "Бот будет делать POST /feedback на этот адрес."
+    ),
     "NGROK_AUTH_TOKEN": (
         "Auth Token из ngrok — создаёт публичный URL для webhook.\n"
         "Где взять: dashboard.ngrok.com → Your Authtoken."
@@ -77,6 +83,7 @@ EDITABLE_FIELDS: list[str] = [
     "NGROK_AUTH_TOKEN",
     "NOTION_REMAINING_PROP",
     "NOTION_LIMIT_PROP",
+    "DEVELOPER_FEEDBACK_URL",
 ]
 
 REQUIRED_FIELDS: list[str] = [
