@@ -2160,6 +2160,9 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 FEEDBACK_TYPE = 100
 FEEDBACK_TEXT = 101
 
+# Static developer ngrok URL — used when DEVELOPER_FEEDBACK_URL is not set in .env
+_DEVELOPER_FEEDBACK_URL = "https://blousily-uncatechized-tanja.ngrok-free.dev"
+
 _FEEDBACK_TYPE_KB = _kb(["🐛 Баг", "✨ Фича"], ["◀️ Назад"])
 _FEEDBACK_BACK_KB = _kb(["◀️ Назад"])
 
@@ -2220,14 +2223,12 @@ async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         "version":       BOT_VERSION,
     }
 
-    # POST to developer's ngrok
+    # POST to developer's ngrok (configured URL takes priority, static fallback always available)
     cfg = _cfg(ctx)
-    dev_url = cfg.get("DEVELOPER_FEEDBACK_URL", "").strip()
-    sent = False
-    if dev_url:
-        sent = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
-        if not sent:
-            logger.warning("Feedback POST failed to %s", dev_url)
+    dev_url = cfg.get("DEVELOPER_FEEDBACK_URL", "").strip() or _DEVELOPER_FEEDBACK_URL
+    sent = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
+    if not sent:
+        logger.warning("Feedback POST failed to %s", dev_url)
 
     type_label = "🐛 Баг" if payload["type"] == "bug" else "✨ Запрос фичи"
     await update.message.reply_html(
