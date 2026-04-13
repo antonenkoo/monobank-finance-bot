@@ -28,8 +28,9 @@ from fastapi import FastAPI, Request, Response
 
 logger = logging.getLogger(__name__)
 
-# ── Shared queue (consumed by PTB job in bot_handlers.py) ─────────────────────
-webhook_queue: queue.Queue = queue.Queue()
+# ── Shared queues (consumed by PTB jobs in bot_handlers.py) ───────────────────
+webhook_queue: queue.Queue = queue.Queue()   # Monobank StatementItem dicts
+trigger_queue: queue.Queue = queue.Queue()   # template dicts from /trigger endpoint
 
 # ── Monobank API ──────────────────────────────────────────────────────────────
 MONO_API_BASE = "https://api.monobank.ua"
@@ -51,6 +52,66 @@ _ngrok_listener = None  # ngrok Listener object
 async def webhook_ping() -> Response:
     """Monobank sends a GET to verify the endpoint is alive."""
     return Response(status_code=200)
+
+
+@app.get("/trigger")
+async def trigger_template(name: str = "", id: str = "") -> Response:
+    """
+    Quick-trigger a saved template by name or ID without opening Telegram.
+
+    GET /trigger?name=Автобус
+    GET /trigger?id=a1b2c3d4
+    GET /trigger              → returns list of available templates
+
+    The PTB job (process_trigger_queue) picks it up and saves to Notion.
+    """
+    from config_manager import TemplateManager
+    tpl_mgr   = TemplateManager()
+    templates = tpl_mgr.get_all()
+
+    # List mode — no params provided
+    if not name and not id:
+        items = [
+            {"id": t["id"], "name": t["name"], "amount": t["amount"],
+             "category": t.get("category_name", "—")}
+            for t in templates
+        ]
+        return Response(
+            content=json.dumps({"templates": items}, ensure_ascii=False),
+            status_code=200,
+            media_type="application/json; charset=utf-8",
+        )
+
+    # Find template
+    tpl: dict | None = None
+    if id:
+        tpl = next((t for t in templates if t["id"] == id), None)
+    elif name:
+        name_lower = name.lower()
+        tpl = next((t for t in templates if t["name"].lower() == name_lower), None)
+
+    if not tpl:
+        available = [t["name"] for t in templates]
+        return Response(
+            content=json.dumps(
+                {"error": f"Template not found", "available": available},
+                ensure_ascii=False,
+            ),
+            status_code=404,
+            media_type="application/json; charset=utf-8",
+        )
+
+    trigger_queue.put(tpl)
+    logger.info("Trigger queued: %s (%.2f UAH)", tpl["name"], abs(tpl["amount"]))
+    return Response(
+        content=json.dumps(
+            {"status": "ok", "template": tpl["name"], "amount": tpl["amount"],
+             "category": tpl.get("category_name", "—")},
+            ensure_ascii=False,
+        ),
+        status_code=200,
+        media_type="application/json; charset=utf-8",
+    )
 
 
 @app.post("/webhook")
@@ -188,7 +249,12 @@ def format_transaction_message(item: dict) -> str:
 
 # ── Server startup / stop / restart ───────────────────────────────────────────
 
-def _run_server_thread(port: int, ngrok_token: Optional[str], mono_token: str) -> None:
+def _run_server_thread(
+    port: int,
+    ngrok_token: Optional[str],
+    mono_token: str,
+    ngrok_domain: str = "",
+) -> None:
     """Entry point for the background daemon thread."""
     global _server_instance
 
@@ -208,7 +274,10 @@ def _run_server_thread(port: int, ngrok_token: Optional[str], mono_token: str) -
                 _ngrok_listener = None
 
             try:
-                listener = await ngrok.forward(port, authtoken=ngrok_token, proto="http")
+                kwargs: dict = {"authtoken": ngrok_token, "proto": "http"}
+                if ngrok_domain:
+                    kwargs["domain"] = ngrok_domain
+                listener = await ngrok.forward(port, **kwargs)
                 _ngrok_listener = listener
                 public_url = listener.url()
                 logger.info("Ngrok tunnel: %s → localhost:%d", public_url, port)
@@ -247,6 +316,7 @@ def run_webhook_server(
     ngrok_token: str,
     mono_token: str,
     account_id: str,
+    ngrok_domain: str = "",
 ) -> threading.Thread:
     """Start the webhook server in a daemon thread. Returns the started Thread."""
     global _account_id, _mono_token
@@ -255,7 +325,7 @@ def run_webhook_server(
 
     t = threading.Thread(
         target=_run_server_thread,
-        args=(port, ngrok_token or None, mono_token),
+        args=(port, ngrok_token or None, mono_token, ngrok_domain),
         daemon=True,
         name="webhook-server",
     )
@@ -269,8 +339,9 @@ def restart_webhook_server(
     ngrok_token: str,
     mono_token: str,
     account_id: str,
+    ngrok_domain: str = "",
 ) -> threading.Thread:
     """Gracefully stop the current server and start a new one."""
     stop_webhook_server()
     time.sleep(1.5)  # allow the old server to shut down
-    return run_webhook_server(port, ngrok_token, mono_token, account_id)
+    return run_webhook_server(port, ngrok_token, mono_token, account_id, ngrok_domain)
