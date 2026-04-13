@@ -38,7 +38,6 @@ from config_manager import (
     TemplateManager,
 )
 from monobank_service import (
-    feedback_notification_queue,
     format_transaction_message,
     get_accounts,
     restart_webhook_server,
@@ -2279,39 +2278,6 @@ def make_feedback_handler() -> ConversationHandler:
         fallbacks=[CommandHandler("cancel", feedback_cancel)],
         per_user=True, per_chat=True, per_message=False,
     )
-
-
-# ── Feedback notification queue (incoming feedback → Telegram alert to admin) ──
-
-async def process_feedback_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """PTB job: drain feedback_notification_queue → send Telegram alert to admin."""
-    cfg     = _cfg(ctx)
-    chat_id = cfg.get("TELEGRAM_CHAT_ID")
-    if not chat_id:
-        return
-
-    while not feedback_notification_queue.empty():
-        try:
-            entry = feedback_notification_queue.get_nowait()
-        except Exception:
-            break
-
-        icon     = "🐛" if entry.get("type") == "bug" else "✨"
-        username = entry.get("from_username", "?")
-        fid      = entry.get("id", "?")
-        text_    = entry.get("text", "")
-        ver      = entry.get("version", "?")
-
-        msg = (
-            f"{icon} <b>Новый фидбек!</b>\n\n"
-            f"От: @{username}  (v{ver})\n"
-            f"ID: <code>{fid}</code>\n\n"
-            f"{text_}"
-        )
-        try:
-            await ctx.bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.HTML)
-        except Exception as exc:
-            logger.error("Feedback notification failed: %s", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
