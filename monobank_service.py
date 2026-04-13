@@ -20,6 +20,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
+from pathlib import Path
 from typing import Optional
 
 import ngrok
@@ -29,8 +31,30 @@ from fastapi import FastAPI, Request, Response
 logger = logging.getLogger(__name__)
 
 # ── Shared queues (consumed by PTB jobs in bot_handlers.py) ───────────────────
-webhook_queue: queue.Queue = queue.Queue()   # Monobank StatementItem dicts
-trigger_queue: queue.Queue = queue.Queue()   # template dicts from /trigger endpoint
+webhook_queue:              queue.Queue = queue.Queue()   # Monobank StatementItem dicts
+trigger_queue:              queue.Queue = queue.Queue()   # template dicts from /trigger endpoint
+feedback_notification_queue: queue.Queue = queue.Queue()  # incoming feedback dicts
+
+# ── Feedback storage ───────────────────────────────────────────────────────────
+FEEDBACKS_FILE = Path("feedbacks.json")
+
+
+def _load_feedbacks() -> list[dict]:
+    try:
+        if FEEDBACKS_FILE.exists():
+            return json.loads(FEEDBACKS_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.error("feedbacks.json load error: %s", exc)
+    return []
+
+
+def _save_feedbacks(data: list[dict]) -> None:
+    try:
+        FEEDBACKS_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.error("feedbacks.json save error: %s", exc)
 
 # ── Monobank API ──────────────────────────────────────────────────────────────
 MONO_API_BASE = "https://api.monobank.ua"
@@ -109,6 +133,43 @@ async def trigger_template(name: str = "", id: str = "") -> Response:
              "category": tpl.get("category_name", "—")},
             ensure_ascii=False,
         ),
+        status_code=200,
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@app.post("/feedback")
+async def receive_feedback(request: Request) -> Response:
+    """
+    Receive feedback from a remote bot instance.
+    Saves to feedbacks.json and puts into feedback_notification_queue
+    so the PTB job can notify the admin via Telegram.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return Response(status_code=400, content=b"bad json")
+
+    entry = {
+        **payload,
+        "id":     str(uuid.uuid4())[:8],
+        "status": "new",
+    }
+
+    # Persist
+    feedbacks = _load_feedbacks()
+    feedbacks.insert(0, entry)   # newest first
+    _save_feedbacks(feedbacks)
+
+    # Notify admin via Telegram (handled by PTB job)
+    feedback_notification_queue.put(entry)
+
+    logger.info(
+        "Feedback saved: %s from @%s  id=%s",
+        entry.get("type"), entry.get("from_username"), entry["id"],
+    )
+    return Response(
+        content=json.dumps({"status": "ok", "id": entry["id"]}, ensure_ascii=False),
         status_code=200,
         media_type="application/json; charset=utf-8",
     )

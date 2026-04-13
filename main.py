@@ -17,8 +17,10 @@ from bot_handlers import (
     handle_notes_skip_callback,
     handle_skip_txn_callback,
     make_add_handler,
+    make_feedback_handler,
     make_settings_handler,
     make_templates_handler,
+    process_feedback_queue,
     process_trigger_queue,
     process_webhook_queue,
     send_startup_message,
@@ -61,6 +63,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("add",             "Добавить транзакцию"),
         BotCommand("create_template", "Создать шаблон"),
         BotCommand("stats",           "Статистика за месяц"),
+        BotCommand("feedback",        "Отправить фидбек разработчику"),
         BotCommand("cancel",          "Отмена текущего действия"),
     ])
     chat_id = app.bot_data["config"].get("TELEGRAM_CHAT_ID")
@@ -120,8 +123,9 @@ def main() -> None:
     app.add_handler(make_settings_handler())
     app.add_handler(make_add_handler())
     app.add_handler(make_templates_handler())
-    app.add_handler(CommandHandler("cancel", cancel_handler))
-    app.add_handler(CommandHandler("stats",  cmd_stats))
+    app.add_handler(make_feedback_handler())
+    app.add_handler(CommandHandler("cancel",   cancel_handler))
+    app.add_handler(CommandHandler("stats",    cmd_stats))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 Статистика$"), cmd_stats))
     app.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^cat:"))
     app.add_handler(CallbackQueryHandler(handle_skip_txn_callback,   pattern=r"^skip_txn:"))
@@ -139,6 +143,12 @@ def main() -> None:
         interval=1.0,
         first=2.0,
         name="trigger_drain",
+    )
+    app.job_queue.run_repeating(
+        process_feedback_queue,
+        interval=5.0,
+        first=5.0,
+        name="feedback_drain",
     )
 
     # Startup banner

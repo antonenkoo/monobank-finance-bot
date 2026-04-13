@@ -38,6 +38,7 @@ from config_manager import (
     TemplateManager,
 )
 from monobank_service import (
+    feedback_notification_queue,
     format_transaction_message,
     get_accounts,
     restart_webhook_server,
@@ -85,17 +86,10 @@ _RELEASE_NOTES = """\
 ──────────────
 
 ✨ <b>Новое</b>
-• 🧠 <b>Авто-категории</b> — бот запоминает категорию по описанию платежа и подставляет автоматически. Выкл: ⚙️ Настройки
-• 📊 <b>Статистика /stats</b> — расходы текущего месяца с прогресс-барами по категориям
-• 🚨 <b>Лимиты по категориям</b> — уведомление когда расходы близко к лимиту
-• ⚡ <b>HTTP-триггеры</b> — шаблоны можно запускать внешним запросом (ярлык на телефоне)
+• 📝 <b>Обратная связь</b> — кнопка «Фидбек» в главном меню. Отправь баг или идею разработчику прямо из бота
 
 🔧 <b>Исправлено</b>
-• Прогресс-бар при ручном добавлении глючил — убран
-• Пример даты при вводе вручную теперь показывает текущее время
-
-⚙️ <b>Нужно настроить</b>
-• <b>Notion Column Name With Monthly Limit</b> — новое поле в конфиге. Название колонки с месячным лимитом в таблице категорий Notion. Если лимиты не используешь — оставь пустым.\
+• Мелкие улучшения стабильности\
 """
 
 _RELEASE_SHOWN_FILE = Path("release_shown.txt")
@@ -153,7 +147,7 @@ def _kb(*rows: list[str], one_time: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(list(rows), resize_keyboard=True, one_time_keyboard=one_time)
 
 
-MAIN_KB = _kb(["➕ Добавить", "📋 Шаблоны"], ["📊 Статистика", "⚙️ Настройки"])
+MAIN_KB = _kb(["➕ Добавить", "📋 Шаблоны"], ["📊 Статистика", "⚙️ Настройки"], ["📝 Фидбек"])
 
 def _settings_kb(mode: str, notes: bool = True, smart_cats: bool = True) -> ReplyKeyboardMarkup:
     """Settings menu keyboard with mode-toggle, notes-toggle and smart-cats-toggle buttons."""
@@ -256,8 +250,8 @@ TPL_EDIT_NOTES    = 29
 TPL_DELETE_CONFIRM = 30
 
 # Prevent main-menu buttons from leaking into text-input states
-_MAIN_BTNS = {"➕ Добавить", "📋 Шаблоны", "⚙️ Настройки", "📊 Статистика"}
-_NOT_MAIN  = ~filters.Regex(r"^(➕ Добавить|📋 Шаблоны|⚙️ Настройки|📊 Статистика)$")
+_MAIN_BTNS = {"➕ Добавить", "📋 Шаблоны", "⚙️ Настройки", "📊 Статистика", "📝 Фидбек"}
+_NOT_MAIN  = ~filters.Regex(r"^(➕ Добавить|📋 Шаблоны|⚙️ Настройки|📊 Статистика|📝 Фидбек)$")
 _TXT       = filters.TEXT & ~filters.COMMAND & _NOT_MAIN
 
 # Russian month names for stats output
@@ -437,14 +431,21 @@ _CHANGELOG: dict[str, str] = {
         "• Убрали глючащий прогресс-бар при ручном добавлении\n"
         "⚙️ Новое в конфиге: <code>NOTION_LIMIT_PROP</code> — колонка с месячным лимитом по категории"
     ),
+    "v1.4.1": (
+        "📝 <b>v1.4.1 — Обратная связь</b>\n\n"
+        "• 📝 Фидбек — кнопка в главном меню для отправки багов и идей разработчику\n"
+        "• Сообщение остаётся в чате, пользователь получает подтверждение\n"
+        "• Фидбек приходит на ngrok разработчика и сохраняется локально\n"
+        "⚙️ Новое в конфиге: <code>DEVELOPER_FEEDBACK_URL</code> — ngrok URL разработчика"
+    ),
 }
 
-_VERSIONS_ORDERED = ["v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
+_VERSIONS_ORDERED = ["v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
 
 _VERSION_KB = _kb(
-    ["v1.4.0", "v1.2.1"],
-    ["v1.2",   "v1.1"],
-    ["v1.0"],
+    ["v1.4.1", "v1.4.0"],
+    ["v1.2.1", "v1.2"],
+    ["v1.1",   "v1.0"],
     ["◀️ Назад к настройкам"],
 )
 
@@ -2150,6 +2151,166 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.HTML,
         reply_markup=MAIN_KB,
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Feedback conversation (all users can submit, no _auth required)
+# ═════════════════════════════════════════════════════════════════════════════
+
+FEEDBACK_TYPE = 100
+FEEDBACK_TEXT = 101
+
+_FEEDBACK_TYPE_KB = _kb(["🐛 Баг", "✨ Фича"], ["◀️ Назад"])
+_FEEDBACK_BACK_KB = _kb(["◀️ Назад"])
+
+
+async def feedback_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for /feedback command or 📝 Фидбек button."""
+    await update.message.reply_html(
+        "📝 <b>Обратная связь</b>\n\n"
+        "Выбери тип заявки:",
+        reply_markup=_FEEDBACK_TYPE_KB,
+    )
+    return FEEDBACK_TYPE
+
+
+async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    t = update.message.text.strip()
+
+    if t == "◀️ Назад":
+        cfg = _cfg(ctx)
+        await _main_menu(update.message, cfg)
+        return ConversationHandler.END
+
+    if t not in ("🐛 Баг", "✨ Фича"):
+        await update.message.reply_text("Выбери тип:", reply_markup=_FEEDBACK_TYPE_KB)
+        return FEEDBACK_TYPE
+
+    ctx.user_data["feedback_type"] = "bug" if t == "🐛 Баг" else "feature"
+    label = "🐛 баг" if t == "🐛 Баг" else "✨ запрос фичи"
+
+    await update.message.reply_html(
+        f"Тип: <b>{label}</b>\n\n"
+        "Опиши проблему или идею подробнее.\n"
+        "<i>Твоё сообщение останется в чате как есть.</i>",
+        reply_markup=_FEEDBACK_BACK_KB,
+    )
+    return FEEDBACK_TEXT
+
+
+async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    t = update.message.text.strip()
+
+    if t == "◀️ Назад":
+        await update.message.reply_html(
+            "📝 <b>Обратная связь</b>\n\nВыбери тип заявки:",
+            reply_markup=_FEEDBACK_TYPE_KB,
+        )
+        return FEEDBACK_TYPE
+
+    # Build payload — no sensitive info (no chat_id), only username + user_id
+    user     = update.message.from_user
+    username = user.username or user.first_name or str(user.id)
+    payload  = {
+        "type":          ctx.user_data.get("feedback_type", "bug"),
+        "text":          t,
+        "from_user_id":  user.id,
+        "from_username": username,
+        "timestamp":     datetime.now(tz=timezone.utc).isoformat(),
+        "version":       BOT_VERSION,
+    }
+
+    # POST to developer's ngrok
+    cfg = _cfg(ctx)
+    dev_url = cfg.get("DEVELOPER_FEEDBACK_URL", "").strip()
+    sent = False
+    if dev_url:
+        sent = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
+        if not sent:
+            logger.warning("Feedback POST failed to %s", dev_url)
+
+    type_label = "🐛 Баг" if payload["type"] == "bug" else "✨ Запрос фичи"
+    await update.message.reply_html(
+        f"✅ <b>Заявка принята!</b>\n\n"
+        f"{type_label}\n\n"
+        "Спасибо за фидбек — разработчик получит уведомление.",
+        reply_markup=MAIN_KB,
+    )
+    return ConversationHandler.END
+
+
+async def feedback_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    cfg = _cfg(ctx)
+    await _main_menu(update.message, cfg)
+    return ConversationHandler.END
+
+
+def _http_post_feedback(url: str, payload: dict) -> bool:
+    """Synchronous HTTP POST (runs in thread via asyncio.to_thread)."""
+    import json as _json
+    import urllib.request as _req
+    data = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = _req.Request(
+        url.rstrip("/") + "/feedback",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _req.urlopen(request, timeout=6) as resp:
+            return resp.status == 200
+    except Exception as exc:
+        logger.debug("_http_post_feedback error: %s", exc)
+        return False
+
+
+def make_feedback_handler() -> ConversationHandler:
+    """ConversationHandler for the feedback flow. No auth — open to all users."""
+    return ConversationHandler(
+        entry_points=[
+            CommandHandler("feedback", feedback_start),
+            MessageHandler(filters.Regex(r"^📝 Фидбек$"), feedback_start),
+        ],
+        states={
+            FEEDBACK_TYPE: [MessageHandler(_TXT, feedback_type)],
+            FEEDBACK_TEXT: [MessageHandler(_TXT, feedback_text)],
+        },
+        fallbacks=[CommandHandler("cancel", feedback_cancel)],
+        per_user=True, per_chat=True, per_message=False,
+    )
+
+
+# ── Feedback notification queue (incoming feedback → Telegram alert to admin) ──
+
+async def process_feedback_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB job: drain feedback_notification_queue → send Telegram alert to admin."""
+    cfg     = _cfg(ctx)
+    chat_id = cfg.get("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        return
+
+    while not feedback_notification_queue.empty():
+        try:
+            entry = feedback_notification_queue.get_nowait()
+        except Exception:
+            break
+
+        icon     = "🐛" if entry.get("type") == "bug" else "✨"
+        username = entry.get("from_username", "?")
+        fid      = entry.get("id", "?")
+        text_    = entry.get("text", "")
+        ver      = entry.get("version", "?")
+
+        msg = (
+            f"{icon} <b>Новый фидбек!</b>\n\n"
+            f"От: @{username}  (v{ver})\n"
+            f"ID: <code>{fid}</code>\n\n"
+            f"{text_}"
+        )
+        try:
+            await ctx.bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.HTML)
+        except Exception as exc:
+            logger.error("Feedback notification failed: %s", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
