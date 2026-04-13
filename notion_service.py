@@ -37,11 +37,13 @@ class NotionService:
         transactions_db_id: str,
         categories_db_id:   str,
         remaining_prop:     str = "Remaining",
+        limit_prop:         str = "",
     ) -> None:
         self.api_key            = api_key
         self.transactions_db_id = transactions_db_id.replace("-", "")
         self.categories_db_id   = categories_db_id.replace("-", "")
         self.remaining_prop     = remaining_prop or "Remaining"
+        self.limit_prop         = limit_prop or ""
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
@@ -137,6 +139,19 @@ class NotionService:
         logger.warning("Unsupported remaining property type: %s", ptype)
         return None
 
+    def get_category_limit(self, category_id: str) -> float | None:
+        """Read the monthly limit from limit_prop for a given category page."""
+        if not self.limit_prop:
+            return None
+        result = self._request("GET", f"/pages/{category_id}")
+        if not result:
+            return None
+        prop = result.get("properties", {}).get(self.limit_prop)
+        if not prop:
+            logger.warning("Property '%s' not found for category %s", self.limit_prop, category_id)
+            return None
+        return self._parse_remaining_prop(prop)
+
     def get_category_remaining(self, category_id: str) -> float | None:
         result = self._request("GET", f"/pages/{category_id}")
         if not result:
@@ -181,7 +196,42 @@ class NotionService:
                 break
 
         return total if found_any else None
-        
+
+    def get_all_category_budgets(self) -> dict[str, float | None]:
+        """
+        Return {normalized_cat_id: limit_or_None} for every category in one query.
+        Requires limit_prop to be configured; returns {} otherwise.
+        """
+        if not self.limit_prop:
+            return {}
+
+        budgets: dict[str, float | None] = {}
+        cursor: Optional[str] = None
+
+        while True:
+            body: dict = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+
+            result = self._request(
+                "POST", f"/databases/{self.categories_db_id}/query", body
+            )
+            if not result:
+                break
+
+            for page in result.get("results", []):
+                cat_id = page["id"].replace("-", "")
+                prop   = page.get("properties", {}).get(self.limit_prop)
+                limit  = self._parse_remaining_prop(prop) if prop else None
+                budgets[cat_id] = limit
+
+            if result.get("has_more") and result.get("next_cursor"):
+                cursor = result["next_cursor"]
+            else:
+                break
+
+        return budgets
+
     # ── Transactions ──────────────────────────────────────────────────────────
 
     def create_transaction(
@@ -224,6 +274,84 @@ class NotionService:
             )
             return True
         return False
+
+    def get_transactions_by_period(
+        self, start: "datetime", end: "datetime"
+    ) -> list[dict]:
+        """
+        Return all transactions in [start, end] (inclusive).
+        Fetches all pages from the DB and filters by date in Python to avoid
+        Notion filter edge-cases (timezone handling, compound filter errors, etc.).
+        Each item: {"name", "amount" (float, neg=expense), "category_id" (str|None), "date" (str|None)}
+        """
+        from datetime import date as _date
+
+        start_date = start.date()
+        end_date   = end.date()
+
+        all_pages: list[dict] = []
+        cursor: Optional[str] = None
+
+        while True:
+            body: dict = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+
+            result = self._request(
+                "POST", f"/databases/{self.transactions_db_id}/query", body
+            )
+            if not result:
+                logger.warning("get_transactions_by_period: Notion query returned None")
+                break
+
+            all_pages.extend(result.get("results", []))
+
+            if result.get("has_more") and result.get("next_cursor"):
+                cursor = result["next_cursor"]
+            else:
+                break
+
+        transactions: list[dict] = []
+        for page in all_pages:
+            amount_prop = page.get("properties", {}).get(PROP_AMOUNT, {})
+            amount      = amount_prop.get("number")
+
+            date_prop = page.get("properties", {}).get(PROP_DATE, {})
+            date_str  = (date_prop.get("date") or {}).get("start")
+
+            # Filter by date range in Python.
+            # Notion date_str is always "YYYY-MM-DD..." so first 10 chars = the date.
+            if date_str:
+                try:
+                    txn_date = _date.fromisoformat(date_str[:10])
+                    if not (start_date <= txn_date <= end_date):
+                        continue
+                except Exception:
+                    continue
+            else:
+                continue  # skip transactions with no date
+
+            if amount is None:
+                continue
+
+            cat_prop = page.get("properties", {}).get(PROP_CATEGORIES, {})
+            cat_ids  = [r["id"] for r in cat_prop.get("relation", [])]
+            cat_id   = cat_ids[0] if cat_ids else None
+
+            name = self._extract_title(page, PROP_NAME)
+
+            transactions.append({
+                "name":        name,
+                "amount":      amount,
+                "category_id": cat_id,
+                "date":        date_str,
+            })
+
+        logger.info(
+            "Loaded %d/%d transactions in range %s–%s",
+            len(transactions), len(all_pages), start_date, end_date,
+        )
+        return transactions
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
