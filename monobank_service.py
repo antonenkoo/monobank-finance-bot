@@ -31,9 +31,8 @@ from fastapi import FastAPI, Request, Response
 logger = logging.getLogger(__name__)
 
 # ── Shared queues (consumed by PTB jobs in bot_handlers.py) ───────────────────
-webhook_queue:              queue.Queue = queue.Queue()   # Monobank StatementItem dicts
-trigger_queue:              queue.Queue = queue.Queue()   # template dicts from /trigger endpoint
-feedback_notification_queue: queue.Queue = queue.Queue()  # incoming feedback dicts
+webhook_queue: queue.Queue = queue.Queue()  # Monobank StatementItem dicts
+trigger_queue: queue.Queue = queue.Queue()  # template dicts from /trigger endpoint
 
 # ── Feedback storage ───────────────────────────────────────────────────────────
 FEEDBACKS_FILE = Path("feedbacks.json")
@@ -160,9 +159,6 @@ async def receive_feedback(request: Request) -> Response:
     feedbacks = _load_feedbacks()
     feedbacks.insert(0, entry)   # newest first
     _save_feedbacks(feedbacks)
-
-    # Notify admin via Telegram (handled by PTB job)
-    feedback_notification_queue.put(entry)
 
     logger.info(
         "Feedback saved: %s from @%s  id=%s",
