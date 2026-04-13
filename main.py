@@ -20,7 +20,6 @@ from bot_handlers import (
     make_feedback_handler,
     make_settings_handler,
     make_templates_handler,
-    process_feedback_queue,
     process_trigger_queue,
     process_webhook_queue,
     send_startup_message,
@@ -144,13 +143,6 @@ def main() -> None:
         first=2.0,
         name="trigger_drain",
     )
-    app.job_queue.run_repeating(
-        process_feedback_queue,
-        interval=5.0,
-        first=5.0,
-        name="feedback_drain",
-    )
-
     # Startup banner
     status   = "✅ настроен" if cfg.is_configured() else "⚠️ требует настройки (/config)"
     mode_tag = "🔔 Про" if cfg.get_mode() == "pro" else "🔇 Тихий"
