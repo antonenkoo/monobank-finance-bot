@@ -11,6 +11,7 @@ from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, 
 
 from bot_handlers import (
     cancel_handler,
+    cmd_stats,
     handle_card_notes_text,
     handle_category_callback,
     handle_notes_skip_callback,
@@ -18,6 +19,7 @@ from bot_handlers import (
     make_add_handler,
     make_settings_handler,
     make_templates_handler,
+    process_trigger_queue,
     process_webhook_queue,
     send_startup_message,
 )
@@ -58,6 +60,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("config",          "Настройки"),
         BotCommand("add",             "Добавить транзакцию"),
         BotCommand("create_template", "Создать шаблон"),
+        BotCommand("stats",           "Статистика за месяц"),
         BotCommand("cancel",          "Отмена текущего действия"),
     ])
     chat_id = app.bot_data["config"].get("TELEGRAM_CHAT_ID")
@@ -79,6 +82,7 @@ def _start_webhook(cfg: ConfigManager, bot_data: dict) -> None:
         ngrok_token=cfg.get("NGROK_AUTH_TOKEN"),
         mono_token=mono_token,
         account_id=cfg.get("MONOBANK_ACCOUNT_ID"),
+        ngrok_domain=cfg.get("NGROK_DOMAIN", ""),
     )
     bot_data["webhook_started"] = True
     bot_data["webhook_thread"]  = thread
@@ -117,16 +121,24 @@ def main() -> None:
     app.add_handler(make_add_handler())
     app.add_handler(make_templates_handler())
     app.add_handler(CommandHandler("cancel", cancel_handler))
+    app.add_handler(CommandHandler("stats",  cmd_stats))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Статистика$"), cmd_stats))
     app.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^cat:"))
     app.add_handler(CallbackQueryHandler(handle_skip_txn_callback,   pattern=r"^skip_txn:"))
     app.add_handler(CallbackQueryHandler(handle_notes_skip_callback, pattern=r"^notes_skip:"))
 
-    # Periodic webhook queue drain
+    # Periodic queue drains
     app.job_queue.run_repeating(
         process_webhook_queue,
         interval=1.0,
         first=2.0,
         name="webhook_drain",
+    )
+    app.job_queue.run_repeating(
+        process_trigger_queue,
+        interval=1.0,
+        first=2.0,
+        name="trigger_drain",
     )
 
     # Startup banner

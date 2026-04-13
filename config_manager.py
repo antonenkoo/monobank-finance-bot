@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION    = "1.2.1"
+BOT_VERSION    = "1.4.0"
 
 ENV_PATH       = Path(".env")
 TEMPLATES_PATH = Path("templates.json")
@@ -30,7 +30,8 @@ FIELD_LABELS: dict[str, str] = {
     "NOTION_CATEGORIES_DB_ID":   "Notion Categories Database ID",
     "NGROK_AUTH_TOKEN":          "Ngrok Auth Token",
     "WEBHOOK_PORT":              "Webhook Port",
-    "NOTION_REMAINING_PROP":     "Notion Column Name With Remaining Amount"
+    "NOTION_REMAINING_PROP":     "Notion Column Name With Remaining Amount",
+    "NOTION_LIMIT_PROP":         "Notion Column Name With Monthly Limit",
 }
 
 FIELD_HINTS: dict[str, str] = {
@@ -57,6 +58,10 @@ FIELD_HINTS: dict[str, str] = {
     "NOTION_REMAINING_PROP": (
         "Название колонки в которой пишеться количество денег оставшееся для каждого типа категории."
     ),
+    "NOTION_LIMIT_PROP": (
+        "Название колонки с лимитом расходов на месяц для каждой категории.\n"
+        "Используется для уведомлений о достижении лимита."
+    ),
     "NGROK_AUTH_TOKEN": (
         "Auth Token из ngrok — создаёт публичный URL для webhook.\n"
         "Где взять: dashboard.ngrok.com → Your Authtoken."
@@ -71,6 +76,7 @@ EDITABLE_FIELDS: list[str] = [
     "NOTION_CATEGORIES_DB_ID",
     "NGROK_AUTH_TOKEN",
     "NOTION_REMAINING_PROP",
+    "NOTION_LIMIT_PROP",
 ]
 
 REQUIRED_FIELDS: list[str] = [
@@ -142,6 +148,13 @@ class ConfigManager:
     def set_notes_enabled(self, enabled: bool) -> None:
         self.set("CARD_NOTES_ENABLED", "on" if enabled else "off")
 
+    def get_smart_cats_enabled(self) -> bool:
+        """Return True if smart (last-used) category suggestion is enabled (default: on)."""
+        return self.get("SMART_CATS_ENABLED", "on").strip().lower() == "on"
+
+    def set_smart_cats_enabled(self, enabled: bool) -> None:
+        self.set("SMART_CATS_ENABLED", "on" if enabled else "off")
+
     def get_webhook_port(self) -> int:
         return int(self.get("WEBHOOK_PORT", "8080"))
 
@@ -161,6 +174,8 @@ class ConfigManager:
             lines.append(f"• {FIELD_LABELS[f]}: {self.mask(f)}")
         mode = "🔔 Про" if self.get_mode() == "pro" else "🔇 Тихий"
         lines.append(f"\n• Режим работы: {mode}")
+        smart = "вкл" if self.get_smart_cats_enabled() else "выкл"
+        lines.append(f"• Авто-категории: {smart}")
         return "\n".join(lines)
 
 
