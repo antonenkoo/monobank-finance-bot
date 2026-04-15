@@ -1660,6 +1660,7 @@ async def _fetch_cats(ctx: ContextTypes.DEFAULT_TYPE) -> list[dict]:
     return ctx.bot_data.get("cats_cache", [])
 
 
+
 async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cfg     = _cfg(ctx)
     chat_id = cfg.get("TELEGRAM_CHAT_ID")
@@ -1922,13 +1923,18 @@ async def _save_card_txn(
     bot=None,                       # required when query is None
     chat_id: str = "",
 ) -> None:
-    """Save a card transaction to Notion and edit the original message with the result."""
-    item             = pending["item"]
-    category_id      = pending.get("category_id")
-    cat_display      = pending.get("cat_display", "без категории")
-    original_text    = pending.get("text", "")
-    message_id       = pending.get("message_id")
-    pending_chat_id  = pending.get("chat_id", chat_id)
+    """Save a card transaction to Notion.
+
+    Shows ✅ immediately after the Notion write completes, then updates
+    the message with budget/remaining info in the background — the user
+    is NOT blocked waiting for that second fetch.
+    """
+    item            = pending["item"]
+    category_id     = pending.get("category_id")
+    cat_display     = pending.get("cat_display", "без категории")
+    original_text   = pending.get("text", "")
+    message_id      = pending.get("message_id")
+    pending_chat_id = pending.get("chat_id", chat_id)
 
     desc   = item.get("description", "Транзакция")
     amount = item.get("amount", 0) / 100
@@ -1937,7 +1943,6 @@ async def _save_card_txn(
     cat_label  = f"🏷 {cat_display}" if cat_display != "без категории" else "⬜ Без категории"
     note_label = f"\n💬 {notes}" if notes else ""
 
-    # Capture the target message reference once, so both edits use the same coords.
     if query and query.message:
         _edit_chat = str(query.message.chat_id)
         _edit_mid  = query.message.message_id
@@ -1956,44 +1961,15 @@ async def _save_card_txn(
             notion.create_transaction, desc, -amount, dt, category_id, notes
         )
 
-    # Remember category for future smart suggestions
     if saved and category_id and cat_display != "без категории":
         _smart_cats.set(desc, category_id, cat_display)
 
     _pending_store.remove(txn_id)
 
     status_line = "✅ <b>Сохранено в Notion</b>" if saved else "⚠️ <b>Ошибка сохранения в Notion</b>"
-
-    cat_rem   = None
-    total_rem = None
-    cat_limit = None
-
-    if saved and category_id and notion:
-        try:
-            await asyncio.sleep(0.7)
-            limit_prop = _cfg(ctx).get("NOTION_LIMIT_PROP", "").strip()
-            gather_coros = [
-                asyncio.to_thread(notion.get_category_remaining, category_id),
-                asyncio.to_thread(notion.get_total_remaining),
-            ]
-            if limit_prop:
-                gather_coros.append(asyncio.to_thread(notion.get_category_limit, category_id))
-
-            results   = await asyncio.wait_for(asyncio.gather(*gather_coros), timeout=8)
-            cat_rem   = results[0]
-            total_rem = results[1]
-            if limit_prop and len(results) > 2:
-                cat_limit = results[2]
-        except Exception as exc:
-            logger.warning("Could not fetch category remaining/limit: %s", exc)
-
-    if cat_rem is not None:
-        status_line += f"\n💼 На месяц осталось по категории: {cat_rem:,.2f} ₴"
-    if total_rem is not None:
-        status_line += f"\n💰 Всего в бюджете осталось: {total_rem:,.2f} ₴"
-
-    # ── Final result edit (fallback to send_message if edit is rejected) ─────────
     result_text = original_text + f"\n\n{cat_label}{note_label}\n\n{status_line}"
+
+    # ── Immediate edit — user sees ✅ right away, no budget wait ──────────────
     if _edit_mid and _edit_chat:
         try:
             await ctx.bot.edit_message_text(
@@ -2004,23 +1980,76 @@ async def _save_card_txn(
             logger.warning("Result edit failed (%s), sending new message", exc)
             try:
                 await ctx.bot.send_message(
-                    chat_id=_edit_chat,
-                    text=result_text,
-                    parse_mode=ParseMode.HTML,
+                    chat_id=_edit_chat, text=result_text, parse_mode=ParseMode.HTML,
                 )
             except Exception as exc2:
                 logger.error("Failed to send result message: %s", exc2)
 
-    # Limit notification (sent as a separate follow-up message)
-    if (saved and category_id and cat_display != "без категории"
-            and cat_rem is not None and cat_limit is not None):
-        await _check_limit_notification(
+    # ── Background budget update — fires and forgets, does NOT block ──────────
+    if saved and category_id and notion:
+        asyncio.create_task(_update_budget_display(
             ctx=ctx,
-            cat_rem=cat_rem,
-            cat_limit=cat_limit,
+            chat_id=_edit_chat,
+            message_id=_edit_mid,
+            base_text=result_text,
+            category_id=category_id,
             cat_display=cat_display,
-            chat_id=pending_chat_id,
-        )
+            notify_chat_id=pending_chat_id,
+        ))
+
+
+async def _update_budget_display(
+    ctx,
+    chat_id:       str,
+    message_id,
+    base_text:     str,
+    category_id:   str,
+    cat_display:   str,
+    notify_chat_id: str,
+) -> None:
+    """Background task: fetch category/total remaining, then edit the message once more.
+
+    Runs concurrently — the user can already interact with the next transaction
+    while this is fetching.  Any failure is logged and silently ignored.
+    """
+    await asyncio.sleep(0.8)   # give Notion time to recompute formula properties
+    notion = _notion(ctx)
+    if not notion or not chat_id or not message_id:
+        return
+    try:
+        limit_prop = _cfg(ctx).get("NOTION_LIMIT_PROP", "").strip()
+        coros = [
+            asyncio.to_thread(notion.get_category_remaining, category_id),
+            asyncio.to_thread(notion.get_total_remaining),
+        ]
+        if limit_prop:
+            coros.append(asyncio.to_thread(notion.get_category_limit, category_id))
+
+        results   = await asyncio.wait_for(asyncio.gather(*coros), timeout=10)
+        cat_rem   = results[0]
+        total_rem = results[1]
+        cat_limit = results[2] if limit_prop and len(results) > 2 else None
+
+        budget_lines = ""
+        if cat_rem is not None:
+            budget_lines += f"\n💼 На месяц осталось по категории: {cat_rem:,.2f} ₴"
+        if total_rem is not None:
+            budget_lines += f"\n💰 Всего в бюджете осталось: {total_rem:,.2f} ₴"
+
+        if budget_lines:
+            await ctx.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id,
+                text=base_text + budget_lines,
+                parse_mode=ParseMode.HTML, reply_markup=None,
+            )
+
+        if cat_rem is not None and cat_limit is not None:
+            await _check_limit_notification(
+                ctx=ctx, cat_rem=cat_rem, cat_limit=cat_limit,
+                cat_display=cat_display, chat_id=notify_chat_id,
+            )
+    except Exception as exc:
+        logger.debug("Budget display update skipped (non-critical): %s", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
