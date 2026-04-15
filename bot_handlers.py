@@ -82,16 +82,6 @@ _STARTUP_MESSAGES = [
 ]
 
 
-_RELEASE_NOTES = """\
-🚀 <b>v{version}</b>
-──────────────
-
-✨ <b>Новое</b>
-• 📝 <b>Обратная связь</b> — кнопка «Фидбек» в главном меню. Отправь баг или идею разработчику прямо из бота
-
-🔧 <b>Исправлено</b>
-• Мелкие улучшения стабильности\
-"""
 
 _RELEASE_SHOWN_FILE = Path("release_shown.txt")
 
@@ -116,9 +106,10 @@ async def send_startup_message(bot: Bot, chat_id: str) -> None:
 
     if shown_ver != BOT_VERSION:
         try:
+            notes = _CHANGELOG.get(f"v{BOT_VERSION}", f"🚀 <b>v{BOT_VERSION}</b>")
             await bot.send_message(
                 chat_id=chat_id,
-                text=_RELEASE_NOTES.format(version=BOT_VERSION),
+                text=notes,
                 parse_mode=ParseMode.HTML,
                 reply_markup=MAIN_KB,
             )
@@ -439,14 +430,33 @@ _CHANGELOG: dict[str, str] = {
         "• Фидбек приходит на ngrok разработчика и сохраняется локально\n"
         "⚙️ Новое в конфиге: <code>DEVELOPER_FEEDBACK_URL</code> — ngrok URL разработчика"
     ),
+    "v1.4.2": (
+        "🔔 <b>v1.4.2 — Уведомления о лимите категорий</b>\n\n"
+        "• ⚠️ Предупреждение когда остаток по категории ≤ 25% лимита — раз в месяц\n"
+        "• 🚨 Уведомление при превышении лимита категории — раз в месяц\n"
+        "• Дедупликация уведомлений через <code>limit_notifications.json</code>"
+    ),
+    "v1.4.3": (
+        "🧹 <b>v1.4.3 — Очистка бюджета категорий</b>\n\n"
+        "• Удалена устаревшая логика бюджета по категориям\n"
+        "• Суммы в бюджетных сообщениях округлены до целых гривен"
+    ),
+    "v1.4.4": (
+        "💰 <b>v1.4.4 — Уведомления об общем бюджете</b>\n\n"
+        "• ⚠️ Общий бюджет ≤ 25% остатка — уведомление раз в месяц\n"
+        "• 🚨 Общий бюджет превышен — уведомление раз в месяц\n"
+        "• Дедупликация через <code>limit_notifications.json</code> (ключ: <code>TOTAL:YYYY-MM:level</code>)"
+    ),
 }
 
-_VERSIONS_ORDERED = ["v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
+_VERSIONS_ORDERED = ["v1.4.4", "v1.4.3", "v1.4.2", "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
 
 _VERSION_KB = _kb(
-    ["v1.4.1", "v1.4.0"],
-    ["v1.2.1", "v1.2"],
-    ["v1.1",   "v1.0"],
+    ["v1.4.4", "v1.4.3"],
+    ["v1.4.2", "v1.4.1"],
+    ["v1.4.0", "v1.2.1"],
+    ["v1.2",   "v1.1"],
+    ["v1.0"],
     ["◀️ Назад к настройкам"],
 )
 
