@@ -45,6 +45,7 @@ from monobank_service import (
     webhook_queue,
 )
 from notion_service import NotionService
+from limit_store import LimitNotificationStore
 from pending_store import PendingTransactionStore
 from smart_categories import SmartCategoryStore
 
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 # ── Persistent stores ──────────────────────────────────────────────────────────
 _pending_store = PendingTransactionStore()
 _smart_cats    = SmartCategoryStore()
+_limit_store   = LimitNotificationStore()
 
 # ── Startup messages ───────────────────────────────────────────────────────────
 _STARTUP_MESSAGES = [
@@ -1869,43 +1871,44 @@ async def _check_limit_notification(
     cat_display: str,
     chat_id:     str,
 ) -> None:
-    """Send a separate limit-warning message if the category is at or over its daily quota."""
-    import calendar as _cal
+    """Send a budget alert in exactly two cases:
+
+    1. ≤ 25% of the monthly budget remains  — once per category per month.
+    2. Monthly budget is exceeded            — once per category per month.
+
+    Both checks are deduplicated via limit_notifications.json so they
+    survive bot restarts and never spam the user.
+    """
     if cat_limit <= 0:
         return
 
-    now           = datetime.now(tz=timezone.utc)
-    days_in_month = _cal.monthrange(now.year, now.month)[1]
-    days_left     = days_in_month - now.day + 1
-    proportional  = cat_limit * (days_left / days_in_month)
+    threshold = cat_limit * 0.25   # 25% of monthly budget
 
     if cat_rem <= 0:
         level = "exceeded"
-    elif cat_rem <= proportional:
-        level = "low"
+    elif cat_rem <= threshold:
+        level = "low25"
     else:
-        return  # all good
+        return  # plenty remaining — no notification
 
-    # Dedup: one notification per (category, date, level) per bot session
-    dedup_key = f"{cat_display}:{now.date().isoformat()}:{level}"
-    notified  = ctx.bot_data.setdefault("limit_notified", {})
-    if dedup_key in notified:
+    # Persistent dedup: one alert per (category, month, level)
+    year_month = datetime.now(tz=timezone.utc).strftime("%Y-%m")
+    dedup_key  = f"{cat_display}:{year_month}:{level}"
+    if _limit_store.already_notified(dedup_key):
         return
-    notified[dedup_key] = True
+    _limit_store.mark_notified(dedup_key)
 
     if level == "exceeded":
         text = (
-            f"🚨 <b>Лимит превышен!</b>\n\n"
+            f"🚨 <b>Бюджет исчерпан</b>\n\n"
             f"🏷 <b>{cat_display}</b>\n"
-            f"Лимит на месяц: {cat_limit:,.2f} ₴\n"
-            f"Перерасход: {abs(cat_rem):,.2f} ₴"
+            f"Средства по этой категории на этот месяц закончились."
         )
-    else:
+    else:  # low25
         text = (
-            f"⚠️ <b>Лимит на сегодня исчерпан</b>\n\n"
+            f"⚠️ <b>Бюджет на исходе</b>\n\n"
             f"🏷 <b>{cat_display}</b>\n"
-            f"Пропорция на {now.day}-е число: {proportional:,.2f} ₴\n"
-            f"Остаток: {cat_rem:,.2f} ₴"
+            f"Осталось меньше 25% — <b>{cat_rem:,.0f} ₴</b>"
         )
 
     try:
