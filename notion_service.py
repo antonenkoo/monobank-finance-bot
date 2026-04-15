@@ -232,6 +232,41 @@ class NotionService:
 
         return budgets
 
+    def get_total_budget(self) -> float | None:
+        """Return the sum of all category limits (requires limit_prop to be configured)."""
+        if not self.limit_prop:
+            return None
+
+        total = 0.0
+        found_any = False
+        cursor: Optional[str] = None
+
+        while True:
+            body: dict = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+
+            result = self._request(
+                "POST", f"/databases/{self.categories_db_id}/query", body
+            )
+            if not result:
+                break
+
+            for page in result.get("results", []):
+                prop = page.get("properties", {}).get(self.limit_prop)
+                if prop:
+                    val = self._parse_remaining_prop(prop)
+                    if val is not None:
+                        total += val
+                        found_any = True
+
+            if result.get("has_more") and result.get("next_cursor"):
+                cursor = result["next_cursor"]
+            else:
+                break
+
+        return total if found_any else None
+
     # ── Transactions ──────────────────────────────────────────────────────────
 
     def create_transaction(
