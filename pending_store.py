@@ -98,3 +98,4 @@ class PendingTransactionStore:
             data.pop(txn_id)
             self._write(data)
             logger.debug("Pending txn removed: %s", txn_id)
+
