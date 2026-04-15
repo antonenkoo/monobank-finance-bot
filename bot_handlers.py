@@ -2003,17 +2003,18 @@ async def _save_card_txn(
 
 async def _update_budget_display(
     ctx,
-    chat_id:       str,
+    chat_id:        str,
     message_id,
-    base_text:     str,
-    category_id:   str,
-    cat_display:   str,
+    base_text:      str,
+    category_id:    str,
+    cat_display:    str,
     notify_chat_id: str,
 ) -> None:
-    """Background task: fetch category/total remaining, then edit the message once more.
+    """Background task: fetch category/total remaining, edit the message, then
+    fire limit notifications for both the category and the overall budget.
 
-    Runs concurrently — the user can already interact with the next transaction
-    while this is fetching.  Any failure is logged and silently ignored.
+    Runs concurrently — the user is never blocked waiting for this.
+    Any failure is logged and silently ignored.
     """
     await asyncio.sleep(0.8)   # give Notion time to recompute formula properties
     notion = _notion(ctx)
@@ -2021,23 +2022,29 @@ async def _update_budget_display(
         return
     try:
         limit_prop = _cfg(ctx).get("NOTION_LIMIT_PROP", "").strip()
+
+        # Always fetch: per-category remaining + total remaining
+        # When limit_prop is set: also fetch per-category limit + total budget limit
         coros = [
-            asyncio.to_thread(notion.get_category_remaining, category_id),
-            asyncio.to_thread(notion.get_total_remaining),
+            asyncio.to_thread(notion.get_category_remaining, category_id),  # [0]
+            asyncio.to_thread(notion.get_total_remaining),                  # [1]
         ]
         if limit_prop:
-            coros.append(asyncio.to_thread(notion.get_category_limit, category_id))
+            coros.append(asyncio.to_thread(notion.get_category_limit, category_id))  # [2]
+            coros.append(asyncio.to_thread(notion.get_total_budget))                 # [3]
 
-        results   = await asyncio.wait_for(asyncio.gather(*coros), timeout=10)
-        cat_rem   = results[0]
-        total_rem = results[1]
-        cat_limit = results[2] if limit_prop and len(results) > 2 else None
+        results      = await asyncio.wait_for(asyncio.gather(*coros), timeout=10)
+        cat_rem      = results[0]
+        total_rem    = results[1]
+        cat_limit    = results[2] if limit_prop and len(results) > 2 else None
+        total_budget = results[3] if limit_prop and len(results) > 3 else None
 
+        # ── Update the transaction message with remaining amounts ──────────────
         budget_lines = ""
         if cat_rem is not None:
-            budget_lines += f"\n💼 На месяц осталось по категории: {cat_rem:,.2f} ₴"
+            budget_lines += f"\n💼 По категории осталось: {cat_rem:,.0f} ₴"
         if total_rem is not None:
-            budget_lines += f"\n💰 Всего в бюджете осталось: {total_rem:,.2f} ₴"
+            budget_lines += f"\n💰 Общий бюджет: {total_rem:,.0f} ₴"
 
         if budget_lines:
             await ctx.bot.edit_message_text(
@@ -2046,13 +2053,68 @@ async def _update_budget_display(
                 parse_mode=ParseMode.HTML, reply_markup=None,
             )
 
+        # ── Per-category limit notification ───────────────────────────────────
         if cat_rem is not None and cat_limit is not None:
             await _check_limit_notification(
                 ctx=ctx, cat_rem=cat_rem, cat_limit=cat_limit,
                 cat_display=cat_display, chat_id=notify_chat_id,
             )
+
+        # ── Total budget notification ─────────────────────────────────────────
+        if total_rem is not None and total_budget is not None:
+            await _check_total_budget_notification(
+                ctx=ctx, total_rem=total_rem, total_budget=total_budget,
+                chat_id=notify_chat_id,
+            )
+
     except Exception as exc:
         logger.debug("Budget display update skipped (non-critical): %s", exc)
+
+
+async def _check_total_budget_notification(
+    ctx,
+    total_rem:    float,
+    total_budget: float,
+    chat_id:      str,
+) -> None:
+    """Send a total-budget alert in exactly two cases:
+
+    1. ≤ 25% of the total monthly budget remains — once per month.
+    2. Total monthly budget is exceeded          — once per month.
+    """
+    if total_budget <= 0:
+        return
+
+    threshold = total_budget * 0.25
+
+    if total_rem <= 0:
+        level = "exceeded"
+    elif total_rem <= threshold:
+        level = "low25"
+    else:
+        return
+
+    year_month = datetime.now(tz=timezone.utc).strftime("%Y-%m")
+    dedup_key  = f"TOTAL:{year_month}:{level}"
+    if _limit_store.already_notified(dedup_key):
+        return
+    _limit_store.mark_notified(dedup_key)
+
+    if level == "exceeded":
+        text = (
+            "🚨 <b>Общий бюджет исчерпан</b>\n\n"
+            "Расходы за этот месяц превысили общий бюджет."
+        )
+    else:  # low25
+        text = (
+            f"⚠️ <b>Общий бюджет на исходе</b>\n\n"
+            f"Осталось меньше 25% — <b>{total_rem:,.0f} ₴</b>"
+        )
+
+    try:
+        await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        logger.error("Failed to send total budget notification: %s", exc)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
