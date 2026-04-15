@@ -126,7 +126,7 @@ def main() -> None:
     app.add_handler(CommandHandler("cancel",   cancel_handler))
     app.add_handler(CommandHandler("stats",    cmd_stats))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 Статистика$"), cmd_stats))
-    app.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^cat:"))
+    app.add_handler(CallbackQueryHandler(handle_category_callback,   pattern=r"^cat:"))
     app.add_handler(CallbackQueryHandler(handle_skip_txn_callback,   pattern=r"^skip_txn:"))
     app.add_handler(CallbackQueryHandler(handle_notes_skip_callback, pattern=r"^notes_skip:"))
 
