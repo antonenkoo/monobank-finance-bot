@@ -13,7 +13,7 @@ Amount display convention (user-facing only):
 import asyncio
 import logging
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +50,16 @@ from pending_store import PendingTransactionStore
 from smart_categories import SmartCategoryStore
 
 logger = logging.getLogger(__name__)
+
+
+def _local_now() -> datetime:
+    """Current local time with timezone offset (e.g. +02:00). Safe on Windows."""
+    return datetime.now().astimezone()
+
+
+def _parse_local_dt(s: str) -> datetime:
+    """Parse 'DD.MM.YYYY HH:MM' as local time with timezone offset."""
+    return datetime.strptime(s, "%d.%m.%Y %H:%M").astimezone()
 
 # ── Persistent stores ──────────────────────────────────────────────────────────
 _pending_store = PendingTransactionStore()
@@ -442,17 +452,36 @@ _CHANGELOG: dict[str, str] = {
         "• Суммы в бюджетных сообщениях округлены до целых гривен"
     ),
     "v1.4.4": (
-        "💰 <b>v1.4.4 — Уведомления об общем бюджете</b>\n\n"
-        "• ⚠️ Общий бюджет ≤ 25% остатка — уведомление раз в месяц\n"
-        "• 🚨 Общий бюджет превышен — уведомление раз в месяц\n"
-        "• Дедупликация через <code>limit_notifications.json</code> (ключ: <code>TOTAL:YYYY-MM:level</code>)"
+        "💰 <b>v1.4.4 — Улучшения статистики и отчёты</b>\n\n"
+        "• 📊 Статистика загружается быстрее — один запрос к Notion вместо трёх\n"
+        "• 📆 Средняя допустимая трата в день по каждой категории (остаток / дней до конца месяца)\n"
+        "• 📄 Ежемесячный PDF-отчёт с графиками — приходит 1-го числа каждого месяца\n"
+        "• 📝 История фидбеков — /feedbacks, статусы «решено» / «в работе», ничего не удаляется\n"
+        "• 🕐 Ручное добавление: время-пример и ввод теперь в локальном времени (не UTC)\n"
+        "• ⚠️ Уведомления об общем бюджете ≤25% и при превышении"
+    ),
+    "v1.5": (
+        "🚀 <b>v1.5 — Аналитика, фидбек-хаб, исправления</b>\n\n"
+        "✨ <b>Новые функции:</b>\n"
+        "• ⚡ Статистика отображается мгновенно из кэша, обновляется в фоне после каждой транзакции\n"
+        "• 📆 Допустимая сумма в день по каждой категории и по общему бюджету\n"
+        "• 🚨 «Бюджет превышен» вместо дневной суммы при превышении лимита\n"
+        "• 📏 Больше отступов между категориями в статистике\n"
+        "• 📅 /report с выбором месяца через inline-клавиатуру\n"
+        "• 📊 PDF-отчёт: pie chart, bar chart по категориям, график расходов по дням + накопительная линия, полный список транзакций сгруппированный по дням\n"
+        "• 🤖 Центральный feedback-bot: принимает фидбеки от всех ботов через HTTP, нотифицирует в реальном времени\n"
+        "• 💬 Отправка фидбеков из gitlab-telegram-webhook и assistant-bot\n\n"
+        "🐛 <b>Исправления:</b>\n"
+        "• 🕐 Время при ручном добавлении отображалось как UTC вместо локального\n"
+        "• 📄 Категории в PDF-отчёте не подтягивались (category_name всегда был пустым)\n"
+        "• 🗑 История фидбеков удалялась — теперь хранится в центральном боте"
     ),
 }
 
-_VERSIONS_ORDERED = ["v1.4.4", "v1.4.3", "v1.4.2", "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
+_VERSIONS_ORDERED = ["v1.5", "v1.4.4", "v1.4.3", "v1.4.2", "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
 
 _VERSION_KB = _kb(
-    ["v1.4.4", "v1.4.3"],
+    ["v1.5",   "v1.4.4"],
     ["v1.4.2", "v1.4.1"],
     ["v1.4.0", "v1.2.1"],
     ["v1.2",   "v1.1"],
@@ -912,11 +941,11 @@ async def add_time_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         return await _show_sign(update.message, mode, ctx.user_data.get("add_amount_abs", 0))
 
     if t == "🕐 Сейчас":
-        ctx.user_data["add_dt"] = datetime.now(tz=timezone.utc)
+        ctx.user_data["add_dt"] = _local_now()
         return await _show_category(update.message, ctx, mode)
 
     if t == "📅 Указать дату и время":
-        _now_example = datetime.now(tz=timezone.utc).strftime("%d.%m.%Y %H:%M")
+        _now_example = _local_now().strftime("%d.%m.%Y %H:%M")
         await update.message.reply_text(
             "Введи дату и время в формате:\n"
             f"<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\nПример: <code>{_now_example}</code>",
@@ -937,10 +966,10 @@ async def add_custom_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         return await _show_time(update.message)
 
     try:
-        ctx.user_data["add_dt"] = datetime.strptime(t, "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
+        ctx.user_data["add_dt"] = _parse_local_dt(t)
     except ValueError:
         await update.message.reply_text(
-            f"❌ Неверный формат. Пример: <code>{datetime.now(tz=timezone.utc).strftime('%d.%m.%Y %H:%M')}</code>",
+            f"❌ Неверный формат. Пример: <code>{_local_now().strftime('%d.%m.%Y %H:%M')}</code>",
             parse_mode=ParseMode.HTML,
             reply_markup=BACK_KB,
         )
@@ -1022,7 +1051,7 @@ async def _finalize_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> in
 async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     desc   = ctx.user_data["add_desc"]
     amt    = ctx.user_data["add_amount"]
-    dt     = ctx.user_data.get("add_dt", datetime.now(tz=timezone.utc))
+    dt     = ctx.user_data.get("add_dt", _local_now())
     notes  = ctx.user_data.get("add_notes", "")
     cid    = ctx.user_data["add_cat_id"]
     cname  = ctx.user_data["add_cat_name"]
@@ -1043,6 +1072,8 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup=ReplyKeyboardRemove(),
         )
         success = await asyncio.to_thread(notion.create_transaction, desc, -amt, dt, cid, notes)
+        if success:
+            _schedule_stats_refresh(ctx)
 
     if success and cid:
         try:
@@ -1293,10 +1324,10 @@ async def tpl_use_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return await _show_tpl_detail(update.message, ctx)
 
     if t == "🕐 Сейчас":
-        return await _apply_template(update.message, ctx, datetime.now(tz=timezone.utc))
+        return await _apply_template(update.message, ctx, _local_now())
 
     if t == "📅 Указать дату и время":
-        _now_example = datetime.now(tz=timezone.utc).strftime("%d.%m.%Y %H:%M")
+        _now_example = _local_now().strftime("%d.%m.%Y %H:%M")
         await update.message.reply_text(
             f"Введи дату и время:\n<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\nПример: <code>{_now_example}</code>",
             parse_mode=ParseMode.HTML,
@@ -1316,10 +1347,10 @@ async def tpl_custom_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         return TPL_USE_TIME
 
     try:
-        dt = datetime.strptime(t, "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
+        dt = _parse_local_dt(t)
     except ValueError:
         await update.message.reply_text(
-            f"❌ Неверный формат. Пример: <code>{datetime.now(tz=timezone.utc).strftime('%d.%m.%Y %H:%M')}</code>",
+            f"❌ Неверный формат. Пример: <code>{_local_now().strftime('%d.%m.%Y %H:%M')}</code>",
             parse_mode=ParseMode.HTML,
             reply_markup=BACK_KB,
         )
@@ -1345,6 +1376,8 @@ async def _apply_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, dt: date
             tpl.get("category_id"), tpl.get("notes", ""),
         )
 
+        if success:
+            _schedule_stats_refresh(ctx)
         if success and tpl.get("category_id"):
             await asyncio.sleep(0.7)
             cat_rem, total_rem = await asyncio.gather(
@@ -1706,6 +1739,7 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 if saved:
                     logger.info("Silent: saved '%s' %.2f UAH to Notion", desc, amount)
+                    _schedule_stats_refresh(ctx)
                 else:
                     logger.warning("Silent: failed to save '%s' to Notion", desc)
             else:
@@ -1976,6 +2010,8 @@ async def _save_card_txn(
 
     if saved and category_id and cat_display != "без категории":
         _smart_cats.set(desc, category_id, cat_display)
+    if saved:
+        _schedule_stats_refresh(ctx)
 
     _pending_store.remove(txn_id)
 
@@ -2131,97 +2167,90 @@ async def _check_total_budget_notification(
 # /stats — monthly analytics
 # ═════════════════════════════════════════════════════════════════════════════
 
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show current-month expense/income breakdown with last-month comparison."""
-    if not _auth(update, ctx):
-        return
+def _bar(ratio: float, width: int = 10) -> str:
+    ratio  = max(0.0, min(1.0, ratio))
+    filled = round(ratio * width)
+    return "█" * filled + "░" * (width - filled)
 
-    notion = _notion(ctx)
-    if not notion:
-        await update.message.reply_text(
-            "⚠️ Notion не настроен. Зайди в ⚙️ Настройки → ⚙️ Конфигурация."
-        )
-        return
 
-    await update.message.reply_text("📊 Загружаю статистику…", reply_markup=MAIN_KB)
-
+async def _build_stats_text(notion: "NotionService") -> str:
+    """Fetch data from Notion and return a ready-to-send HTML stats string."""
     import calendar as _cal
-    now        = datetime.now(tz=timezone.utc)
+
+    now        = _local_now()
     this_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    days_in_month = _cal.monthrange(now.year, now.month)[1]
-    day_progress  = now.day / days_in_month
+    days_in_month  = _cal.monthrange(now.year, now.month)[1]
+    days_remaining = days_in_month - now.day + 1
+    day_progress   = now.day / days_in_month
 
-    try:
-        cats, this_txns, cat_budgets, total_rem = await asyncio.gather(
-            asyncio.to_thread(notion.get_categories),
-            asyncio.to_thread(notion.get_transactions_by_period, this_start, now),
-            asyncio.to_thread(notion.get_all_category_budgets),
-            asyncio.to_thread(notion.get_total_remaining),
-        )
-    except Exception as exc:
-        logger.error("Stats fetch failed: %s", exc)
-        await update.message.reply_text("❌ Не удалось загрузить данные из Notion.")
-        return
+    cats_full, this_txns = await asyncio.gather(
+        asyncio.to_thread(notion.get_categories_full),
+        asyncio.to_thread(notion.get_transactions_by_period, this_start, now),
+    )
 
-    cat_name_map: dict[str, str] = {c["id"].replace("-", ""): c["name"] for c in cats}
+    cat_name_map: dict[str, str]         = {c["id"].replace("-", ""): c["name"]      for c in cats_full}
+    cat_remaining: dict[str, float|None] = {c["id"].replace("-", ""): c["remaining"] for c in cats_full}
+    cat_limits:    dict[str, float|None] = {c["id"].replace("-", ""): c["limit"]     for c in cats_full}
+    total_rem = sum(r for r in cat_remaining.values() if r is not None) or None
 
-    # Notion convention: positive amount = expense, negative = income
-    # (bot stores: create_transaction(desc, -internal_amt) where internal_amt<0 for expense)
-    by_cat:    dict[str, float] = {}  # cname → spent
-    by_cat_id: dict[str, str]   = {}  # cname → cat_id (for budget lookup)
+    by_cat:    dict[str, float] = {}
+    by_cat_id: dict[str, str]   = {}
     total_exp = 0.0
     total_inc = 0.0
     for txn in this_txns:
         amt    = txn.get("amount") or 0.0
         cat_id = (txn.get("category_id") or "").replace("-", "")
         cname  = cat_name_map.get(cat_id) or "Без категории"
-        if amt > 0:                        # positive = expense
+        if amt > 0:
             by_cat[cname]    = by_cat.get(cname, 0.0) + amt
             by_cat_id[cname] = cat_id
             total_exp       += amt
-        elif amt < 0:                      # negative = income
-            total_inc       += (-amt)
-
-    def _bar(ratio: float, width: int = 10) -> str:
-        ratio  = max(0.0, min(1.0, ratio))
-        filled = round(ratio * width)
-        return "█" * filled + "░" * (width - filled)
+        elif amt < 0:
+            total_inc += (-amt)
 
     this_month = _MONTHS_RU[now.month - 1]
 
-    # ── Overall budget block ───────────────────────────────────────────────────
     budget_block = ""
     if total_rem is not None:
         total_budget = total_exp + total_rem
         if total_budget > 0:
-            budget_pct   = total_exp / total_budget * 100
-            budget_ratio = total_exp / total_budget
-            budget_bar   = _bar(budget_ratio)
+            budget_pct = total_exp / total_budget * 100
+            budget_bar = _bar(total_exp / total_budget)
+            if total_rem <= 0:
+                daily_hint = "🚨 Бюджет превышен"
+            else:
+                daily_val  = total_rem / days_remaining if days_remaining > 0 else 0
+                daily_hint = f"📆 ~{daily_val:,.0f} ₴/день"
             budget_block = (
                 f"\n💼 <b>Общий бюджет</b>\n"
                 f"<code>{budget_bar}</code>  {budget_pct:.0f}%"
-                f"  ·  {total_exp:,.0f} / {total_budget:,.0f} ₴"
-                f"  (остаток: {total_rem:,.0f} ₴)"
+                f"  ·  {total_exp:,.0f} / {total_budget:,.0f} ₴\n"
+                f"   Остаток: {total_rem:,.0f} ₴  ·  {daily_hint}"
             )
 
-    # ── Per-category lines ─────────────────────────────────────────────────────
     cat_lines: list[str] = []
     for cname in sorted(by_cat, key=lambda c: by_cat[c], reverse=True):
-        spent  = by_cat[cname]
-        cid    = by_cat_id.get(cname, "")
-        limit  = cat_budgets.get(cid) if cid else None
+        spent = by_cat[cname]
+        cid   = by_cat_id.get(cname, "")
+        limit = cat_limits.get(cid) if cid else None
+        rem   = cat_remaining.get(cid) if cid else None
 
         if limit and limit > 0:
-            pct   = spent / limit * 100
-            bar   = _bar(spent / limit)
-            line  = (
+            pct  = spent / limit * 100
+            bar  = _bar(spent / limit)
+            line = (
                 f"<b>{cname}</b>\n"
                 f"<code>{bar}</code>  {pct:.0f}%"
                 f"  ·  {spent:,.0f} / {limit:,.0f} ₴"
             )
+            if rem is not None:
+                if rem <= 0:
+                    line += "\n   🚨 Бюджет превышен"
+                else:
+                    daily = rem / days_remaining if days_remaining > 0 else 0
+                    line += f"\n   📆 ~{daily:,.0f} ₴/день"
         else:
-            # No limit — show share of total expenses
             pct  = spent / total_exp * 100 if total_exp > 0 else 0.0
             bar  = _bar(spent / total_exp if total_exp > 0 else 0.0)
             line = (
@@ -2231,9 +2260,8 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
         cat_lines.append(line)
 
-    # ── Assemble message ───────────────────────────────────────────────────────
     day_bar  = _bar(day_progress)
-    day_info = f"<code>{day_bar}</code>  {now.day}/{days_in_month} дней"
+    day_info = f"<code>{day_bar}</code>  {now.day}/{days_in_month} дней  (осталось {days_remaining})"
 
     parts = [
         f"📊 <b>Статистика — {this_month} {now.year}</b>",
@@ -2245,15 +2273,93 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if budget_block:
         parts.append(budget_block)
     if cat_lines:
-        parts += ["", "📋 <b>По категориям:</b>", ""] + cat_lines
+        spaced: list[str] = []
+        for i, line in enumerate(cat_lines):
+            spaced.append(line)
+            if i < len(cat_lines) - 1:
+                spaced.append("")
+        parts += ["", "📋 <b>По категориям:</b>", ""] + spaced
     else:
         parts += ["", "<i>Транзакций за этот месяц не найдено</i>"]
 
-    await update.message.reply_text(
-        "\n".join(parts),
-        parse_mode=ParseMode.HTML,
-        reply_markup=MAIN_KB,
-    )
+    return "\n".join(parts)
+
+
+async def _refresh_stats_cache(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB job: rebuild stats cache in background. Skips if already running."""
+    if ctx.bot_data.get("stats_refreshing"):
+        return
+    notion = _notion(ctx)
+    if not notion:
+        return
+    ctx.bot_data["stats_refreshing"] = True
+    try:
+        text = await _build_stats_text(notion)
+        ctx.bot_data["stats_cache"] = {"text": text, "updated_at": _local_now()}
+        logger.info("Stats cache updated")
+    except Exception as exc:
+        logger.error("Stats cache refresh failed: %s", exc)
+    finally:
+        ctx.bot_data["stats_refreshing"] = False
+
+
+def _schedule_stats_refresh(ctx: ContextTypes.DEFAULT_TYPE, delay: float = 5.0) -> None:
+    """Schedule a background stats rebuild after a transaction is saved."""
+    try:
+        # Remove existing pending refresh to avoid pile-up
+        current = ctx.application.job_queue.get_jobs_by_name("stats_refresh")
+        for job in current:
+            job.schedule_removal()
+        ctx.application.job_queue.run_once(
+            _refresh_stats_cache, when=delay, name="stats_refresh"
+        )
+    except Exception as exc:
+        logger.debug("Could not schedule stats refresh: %s", exc)
+
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show stats from cache instantly; rebuild cache in background if stale."""
+    if not _auth(update, ctx):
+        return
+
+    notion = _notion(ctx)
+    if not notion:
+        await update.message.reply_text(
+            "⚠️ Notion не настроен. Зайди в ⚙️ Настройки → ⚙️ Конфигурация."
+        )
+        return
+
+    cache = ctx.bot_data.get("stats_cache")
+
+    if cache:
+        age_sec = (_local_now() - cache["updated_at"]).total_seconds()
+        age_min = int(age_sec // 60)
+        if age_min == 0:
+            freshness = "<i>🟢 только что обновлено</i>"
+        else:
+            freshness = f"<i>🕐 обновлено {age_min} мин. назад</i>"
+
+        await update.message.reply_text(
+            cache["text"] + f"\n\n{freshness}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=MAIN_KB,
+        )
+        # Refresh in background if older than 10 minutes
+        if age_sec > 600:
+            _schedule_stats_refresh(ctx, delay=0)
+        return
+
+    # No cache yet — build synchronously (first run)
+    await update.message.reply_text("📊 Загружаю статистику…", reply_markup=MAIN_KB)
+    try:
+        text = await _build_stats_text(notion)
+    except Exception as exc:
+        logger.error("Stats fetch failed: %s", exc)
+        await update.message.reply_text("❌ Не удалось загрузить данные из Notion.")
+        return
+
+    ctx.bot_data["stats_cache"] = {"text": text, "updated_at": _local_now()}
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=MAIN_KB)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2318,6 +2424,7 @@ async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     user     = update.message.from_user
     username = user.username or user.first_name or str(user.id)
     payload  = {
+        "project":       "monobank-finance-bot",
         "type":          ctx.user_data.get("feedback_type", "bug"),
         "text":          t,
         "from_user_id":  user.id,
@@ -2385,6 +2492,574 @@ def make_feedback_handler() -> ConversationHandler:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Monthly report — PDF with charts, sent on 1st of each month
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _enrich_txns(txns: list[dict], cats_full: list[dict]) -> list[dict]:
+    """Add 'category' name field to each transaction using cats_full id→name map."""
+    id_to_name = {c["id"].replace("-", ""): c["name"] for c in cats_full}
+    enriched = []
+    for t in txns:
+        cat_id   = (t.get("category_id") or "").replace("-", "")
+        cat_name = id_to_name.get(cat_id, "Без категории") if cat_id else "Без категории"
+        enriched.append({**t, "category": cat_name})
+    return enriched
+
+
+def _generate_monthly_pdf(
+    month_name: str,
+    year: int,
+    month: int,
+    by_cat: dict[str, float],   # category name → total spent
+    total_exp: float,
+    total_inc: float,
+    txns: list[dict],           # enriched: each has 'name', 'amount', 'category', 'date'
+) -> bytes:
+    """Generate a multi-page PDF report with charts and full transaction list."""
+    import io
+    import calendar as _cal
+    from collections import defaultdict
+    from datetime import date as _date
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import matplotlib.backends.backend_pdf as pdf_backend
+
+    plt.rcParams["font.family"] = "DejaVu Sans"
+
+    PALETTE = [
+        "#4e9af1", "#f1914e", "#4ec27d", "#f14e6e", "#a04ef1",
+        "#f1d44e", "#4ecdf1", "#f1724e", "#7df14e", "#f14eb0",
+        "#6e9ef1", "#f1b04e",
+    ]
+    WEEKDAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+    buf = io.BytesIO()
+    with pdf_backend.PdfPages(buf) as pdf:
+
+        # ── PAGE 1: Summary + Pie chart ──────────────────────────────────────
+        fig = plt.figure(figsize=(13, 9))
+        fig.patch.set_facecolor("#f8f9fc")
+
+        fig.text(0.5, 0.96, f"Финансовый отчёт  —  {month_name.capitalize()} {year}",
+                 ha="center", fontsize=19, fontweight="bold", color="#1a2040")
+        fig.text(0.5, 0.925, f"Транзакций: {len(txns)}   |   Расходы: {total_exp:,.0f} ₴   "
+                             f"|   Доходы: {total_inc:,.0f} ₴   |   Баланс: {total_inc - total_exp:+,.0f} ₴",
+                 ha="center", fontsize=10, color="#555")
+
+        # Pie chart (left 50%)
+        ax_pie = fig.add_axes([0.02, 0.08, 0.46, 0.80])
+        cat_sorted_desc = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)
+        if cat_sorted_desc:
+            labels = [c for c, _ in cat_sorted_desc]
+            values = [v for _, v in cat_sorted_desc]
+            colors = PALETTE[:len(labels)]
+            wedges, _, autotexts = ax_pie.pie(
+                values, labels=None,
+                autopct=lambda p: f"{p:.1f}%" if p >= 3 else "",
+                startangle=140, colors=colors,
+                wedgeprops=dict(edgecolor="white", linewidth=1.8),
+                pctdistance=0.72,
+            )
+            for at in autotexts:
+                at.set_fontsize(7.5)
+            ax_pie.legend(
+                wedges,
+                [f"{l}  ({v:,.0f} ₴)" for l, v in zip(labels, values)],
+                loc="lower center", bbox_to_anchor=(0.5, -0.13),
+                fontsize=7.5, ncol=2, frameon=False,
+            )
+            ax_pie.set_title("Расходы по категориям", fontsize=11, pad=8, color="#333")
+        else:
+            ax_pie.text(0.5, 0.5, "Нет данных", ha="center", va="center")
+            ax_pie.axis("off")
+
+        # Summary table (right 45%)
+        ax_tbl = fig.add_axes([0.52, 0.08, 0.46, 0.80])
+        ax_tbl.axis("off")
+        ax_tbl.set_xlim(0, 1)
+        ax_tbl.set_ylim(0, 1)
+
+        balance = total_inc - total_exp
+        bal_color = "#27ae60" if balance >= 0 else "#c0392b"
+
+        # Totals block
+        for y_pos, label, value, color in [
+            (0.92, "Расходы",  f"{total_exp:>12,.2f} ₴", "#c0392b"),
+            (0.84, "Доходы",   f"{total_inc:>12,.2f} ₴", "#27ae60"),
+            (0.76, "Баланс",   f"{balance:>+12,.2f} ₴",  bal_color),
+        ]:
+            ax_tbl.text(0.04, y_pos, label, fontsize=11, color="#444", va="top")
+            ax_tbl.text(0.96, y_pos, value, fontsize=11, color=color, va="top",
+                        ha="right", fontfamily="monospace", fontweight="bold")
+        ax_tbl.axhline(0.73, color="#ccd", linewidth=0.8, xmin=0.02, xmax=0.98)
+
+        # Categories breakdown
+        ax_tbl.text(0.04, 0.69, "Категория", fontsize=8, color="#777", va="top", fontweight="bold")
+        ax_tbl.text(0.96, 0.69, "Сумма  / %", fontsize=8, color="#777", va="top",
+                    ha="right", fontweight="bold")
+        ax_tbl.axhline(0.66, color="#eee", linewidth=0.5, xmin=0.02, xmax=0.98)
+
+        y_cat = 0.63
+        for i, (cname, spent) in enumerate(cat_sorted_desc):
+            if y_cat < 0.02:
+                break
+            pct   = spent / total_exp * 100 if total_exp else 0
+            color = PALETTE[i % len(PALETTE)]
+            ax_tbl.add_patch(mpatches.Rectangle((0.02, y_cat - 0.01), 0.008, 0.030,
+                                                  facecolor=color, edgecolor="none"))
+            ax_tbl.text(0.05, y_cat, cname[:26], fontsize=8, color="#333", va="center")
+            ax_tbl.text(0.96, y_cat, f"{spent:>9,.0f} ₴  {pct:4.1f}%",
+                        fontsize=8, color="#333", va="center", ha="right", fontfamily="monospace")
+            ax_tbl.axhline(y_cat - 0.018, color="#f0f0f0", linewidth=0.4, xmin=0.02, xmax=0.98)
+            y_cat -= 0.038
+
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        # ── PAGE 2: Horizontal category bar chart ────────────────────────────
+        if cat_sorted_desc:
+            cat_asc = sorted(by_cat.items(), key=lambda x: x[1])
+            n       = len(cat_asc)
+            height  = max(5, n * 0.55 + 2)
+
+            fig2, ax2 = plt.subplots(figsize=(13, height))
+            fig2.patch.set_facecolor("#f8f9fc")
+
+            names  = [c for c, _ in cat_asc]
+            values = [v for _, v in cat_asc]
+            colors = [PALETTE[i % len(PALETTE)] for i in range(n - 1, -1, -1)]
+            max_v  = max(values) if values else 1
+
+            bars = ax2.barh(names, values, color=colors, edgecolor="white",
+                            height=0.62, linewidth=1.2)
+            for bar, val in zip(bars, values):
+                pct = val / total_exp * 100 if total_exp else 0
+                ax2.text(bar.get_width() + max_v * 0.01,
+                         bar.get_y() + bar.get_height() / 2,
+                         f"{val:,.0f} ₴  ({pct:.1f}%)",
+                         va="center", fontsize=8.5, color="#333")
+
+            ax2.set_xlim(0, max_v * 1.35)
+            ax2.set_xlabel("Сумма, ₴", fontsize=10)
+            ax2.set_title(f"Расходы по категориям  —  {month_name.capitalize()} {year}",
+                          fontsize=13, fontweight="bold", pad=12, color="#1a2040")
+            ax2.spines["top"].set_visible(False)
+            ax2.spines["right"].set_visible(False)
+            ax2.tick_params(axis="y", labelsize=9)
+
+            plt.tight_layout()
+            pdf.savefig(fig2, bbox_inches="tight")
+            plt.close(fig2)
+
+        # ── PAGE 3: Daily bar chart + cumulative line ─────────────────────────
+        days_in_month = _cal.monthrange(year, month)[1]
+        daily_exp: dict[int, float] = {d: 0.0 for d in range(1, days_in_month + 1)}
+        daily_inc: dict[int, float] = {d: 0.0 for d in range(1, days_in_month + 1)}
+
+        for txn in txns:
+            amt = txn.get("amount") or 0.0
+            ds  = txn.get("date", "")
+            if not ds:
+                continue
+            try:
+                day = int(ds[8:10])
+            except Exception:
+                continue
+            if amt > 0:
+                daily_exp[day] += amt
+            else:
+                daily_inc[day] += abs(amt)
+
+        days     = list(range(1, days_in_month + 1))
+        exp_vals = [daily_exp[d] for d in days]
+        inc_vals = [daily_inc[d] for d in days]
+        cum_exp  = []
+        running  = 0.0
+        for v in exp_vals:
+            running += v
+            cum_exp.append(running)
+
+        active_days = sum(1 for v in exp_vals if v > 0)
+        avg_day     = total_exp / active_days if active_days > 0 else 0
+
+        fig3, (ax3a, ax3b) = plt.subplots(2, 1, figsize=(14, 9),
+                                           gridspec_kw={"height_ratios": [3, 1.6]})
+        fig3.patch.set_facecolor("#f8f9fc")
+        fig3.suptitle(f"Расходы по дням  —  {month_name.capitalize()} {year}",
+                      fontsize=14, fontweight="bold", color="#1a2040", y=0.99)
+
+        bw = 0.38
+        ax3a.bar([d - bw/2 for d in days], exp_vals, width=bw,
+                 color="#e74c3c", alpha=0.82, label="Расходы")
+        ax3a.bar([d + bw/2 for d in days], inc_vals, width=bw,
+                 color="#27ae60", alpha=0.82, label="Доходы")
+
+        ax3a_r = ax3a.twinx()
+        ax3a_r.plot(days, cum_exp, color="#c0392b", linewidth=2,
+                    linestyle="--", alpha=0.7, label="Накопленные расходы")
+        ax3a_r.set_ylabel("Накопленные расходы, ₴", fontsize=8, color="#c0392b")
+        ax3a_r.tick_params(axis="y", labelcolor="#c0392b", labelsize=7)
+        ax3a_r.spines["top"].set_visible(False)
+
+        ax3a.set_xlim(0.5, days_in_month + 0.5)
+        ax3a.set_xticks(days)
+        ax3a.set_ylabel("Сумма, ₴", fontsize=9)
+        ax3a.legend(loc="upper left", fontsize=8)
+        ax3a.spines["top"].set_visible(False)
+        ax3a.spines["right"].set_visible(False)
+        ax3a.tick_params(axis="x", labelsize=7)
+
+        # Bottom: daily bars with avg line
+        bar_colors = ["#e74c3c" if v > avg_day * 1.5 else "#4e9af1" for v in exp_vals]
+        ax3b.bar(days, exp_vals, color=bar_colors, alpha=0.85)
+        ax3b.axhline(avg_day, color="#e74c3c", linestyle="--", linewidth=1.5,
+                     label=f"Среднее в активный день: {avg_day:,.0f} ₴")
+        ax3b.set_xlim(0.5, days_in_month + 0.5)
+        ax3b.set_xticks(days)
+        ax3b.set_xlabel("День месяца", fontsize=9)
+        ax3b.set_ylabel("₴", fontsize=8)
+        ax3b.legend(fontsize=7.5, loc="upper right")
+        ax3b.spines["top"].set_visible(False)
+        ax3b.spines["right"].set_visible(False)
+        ax3b.tick_params(axis="x", labelsize=7)
+
+        plt.tight_layout()
+        pdf.savefig(fig3, bbox_inches="tight")
+        plt.close(fig3)
+
+        # ── PAGE 4+: Transaction list grouped by day ──────────────────────────
+        # Only expenses, sorted by date
+        expense_txns = sorted(
+            [t for t in txns if (t.get("amount") or 0) > 0],
+            key=lambda t: t.get("date", ""),
+        )
+
+        # Group by calendar date
+        by_day: dict[str, list] = defaultdict(list)
+        for t in expense_txns:
+            by_day[t.get("date", "")[:10]].append(t)
+
+        # Build flat row list: header rows + txn rows
+        Row = dict
+        rows: list[Row] = []
+        for date_key in sorted(by_day.keys()):
+            day_txns  = by_day[date_key]
+            day_total = sum(t.get("amount", 0) for t in day_txns)
+            try:
+                d        = _date.fromisoformat(date_key)
+                wd       = WEEKDAYS_RU[d.weekday()]
+                day_lbl  = f"{d.day} {_MONTHS_RU[d.month-1]}  ({wd})  — итого: {day_total:,.0f} ₴"
+            except Exception:
+                day_lbl  = date_key
+            rows.append({"type": "header", "label": day_lbl})
+            for t in day_txns:
+                rows.append({"type": "txn", "txn": t})
+
+        ROWS_PER_PAGE = 32
+        total_pages   = max(1, (len(rows) - 1) // ROWS_PER_PAGE + 1)
+
+        for page_idx in range(0, max(1, len(rows)), ROWS_PER_PAGE):
+            page_rows = rows[page_idx: page_idx + ROWS_PER_PAGE]
+            pg_num    = page_idx // ROWS_PER_PAGE + 1
+
+            fig_t = plt.figure(figsize=(14, 10))
+            fig_t.patch.set_facecolor("#f8f9fc")
+            ax_t  = fig_t.add_axes([0.01, 0.02, 0.98, 0.96])
+            ax_t.axis("off")
+            ax_t.set_xlim(0, 1)
+            ax_t.set_ylim(0, 1)
+
+            ax_t.text(0.5, 0.985,
+                      f"Список расходов  —  {month_name.capitalize()} {year}"
+                      f"   (стр. {pg_num}/{total_pages})",
+                      ha="center", va="top", fontsize=12, fontweight="bold", color="#1a2040")
+
+            # Column headers
+            y = 0.955
+            for xpos, label, align in [
+                (0.01, "Время", "left"),
+                (0.07, "Описание", "left"),
+                (0.63, "Категория", "left"),
+                (0.99, "Сумма, ₴", "right"),
+            ]:
+                ax_t.text(xpos, y, label, fontsize=7.5, fontweight="bold",
+                          color="#666", va="top", ha=align)
+            ax_t.axhline(y - 0.012, color="#aab", linewidth=0.8)
+            y -= 0.030
+
+            for i, row in enumerate(page_rows):
+                if y < 0.01:
+                    break
+                if row["type"] == "header":
+                    ax_t.add_patch(mpatches.FancyBboxPatch(
+                        (0.005, y - 0.013), 0.99, 0.022,
+                        boxstyle="round,pad=0.001",
+                        facecolor="#dce5f5", edgecolor="none",
+                    ))
+                    ax_t.text(0.015, y, row["label"],
+                              fontsize=8, fontweight="bold", color="#1a3080", va="top")
+                    y -= 0.030
+                else:
+                    t      = row["txn"]
+                    name   = (t.get("name") or "")[:50]
+                    cat    = (t.get("category") or "—")[:24]
+                    amt    = t.get("amount") or 0.0
+                    ds     = t.get("date", "")
+                    time_s = ds[11:16] if len(ds) > 10 else ""
+
+                    bg = "#f4f4f8" if i % 2 == 0 else "#fafafa"
+                    ax_t.add_patch(mpatches.FancyBboxPatch(
+                        (0.005, y - 0.011), 0.99, 0.018,
+                        boxstyle="square,pad=0",
+                        facecolor=bg, edgecolor="none",
+                    ))
+                    ax_t.text(0.01,  y, time_s, fontsize=7,  color="#888",   va="top")
+                    ax_t.text(0.07,  y, name,   fontsize=7.5, color="#222",  va="top")
+                    ax_t.text(0.63,  y, cat,    fontsize=7.5, color="#555",  va="top")
+                    ax_t.text(0.99,  y, f"{amt:,.0f}",
+                              fontsize=7.5, color="#c0392b", va="top", ha="right",
+                              fontfamily="monospace")
+                    y -= 0.025
+
+            # Footer
+            ax_t.axhline(0.025, color="#ccc", linewidth=0.5)
+            ax_t.text(0.5, 0.012,
+                      f"Итого расходы за {month_name}: {total_exp:,.2f} ₴   "
+                      f"|   Транзакций: {len(expense_txns)}",
+                      ha="center", fontsize=7.5, color="#888", va="top")
+
+            pdf.savefig(fig_t, bbox_inches="tight")
+            plt.close(fig_t)
+
+    buf.seek(0)
+    return buf.read()
+
+
+async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/report — show month picker to choose which month to generate PDF for."""
+    if not _auth(update, ctx):
+        return
+    notion = _notion(ctx)
+    if not notion:
+        await update.message.reply_text(
+            "⚠️ Notion не настроен. Зайди в ⚙️ Настройки → ⚙️ Конфигурация."
+        )
+        return
+
+    now = _local_now()
+    buttons: list[list] = []
+    row: list = []
+    for i in range(6):
+        # go back i months from current
+        month_offset = now.month - 1 - i
+        year  = now.year + month_offset // 12
+        month = month_offset % 12 + 1
+        label = f"{_MONTHS_RU[month - 1].capitalize()} {year}"
+        row.append(InlineKeyboardButton(label, callback_data=f"rpt:{year}:{month:02d}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    # Current month option
+    buttons.append([InlineKeyboardButton(
+        f"📅 {_MONTHS_RU[now.month-1].capitalize()} {now.year} (текущий)",
+        callback_data=f"rpt:{now.year}:{now.month:02d}:current"
+    )])
+
+    await update.message.reply_text(
+        "📄 <b>Выбери месяц для отчёта:</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle rpt:YYYY:MM or rpt:YYYY:MM:current inline button."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = (query.data or "").split(":")
+    # parts: ["rpt", "YYYY", "MM"] or ["rpt", "YYYY", "MM", "current"]
+    if len(parts) < 3:
+        return
+
+    rep_year   = int(parts[1])
+    rep_month  = int(parts[2])
+    is_current = len(parts) > 3 and parts[3] == "current"
+
+    notion = _notion(ctx)
+    if not notion:
+        await query.edit_message_text("⚠️ Notion не настроен.")
+        return
+
+    month_name = _MONTHS_RU[rep_month - 1]
+    await query.edit_message_text(f"📄 Генерирую отчёт за {month_name} {rep_year}…")
+
+    import calendar as _cal
+    if is_current:
+        now          = _local_now()
+        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        period_end   = now
+    else:
+        days_in_month = _cal.monthrange(rep_year, rep_month)[1]
+        period_start  = _local_now().replace(
+            year=rep_year, month=rep_month, day=1,
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        period_end = period_start.replace(day=days_in_month, hour=23, minute=59, second=59)
+
+    try:
+        cats_full, txns = await asyncio.gather(
+            asyncio.to_thread(notion.get_categories_full),
+            asyncio.to_thread(notion.get_transactions_by_period, period_start, period_end),
+        )
+    except Exception as exc:
+        logger.error("handle_report_callback: fetch failed: %s", exc)
+        await query.edit_message_text("❌ Не удалось загрузить данные из Notion.")
+        return
+
+    txns_enriched = _enrich_txns(txns, cats_full)
+
+    by_cat: dict[str, float] = {}
+    total_exp = 0.0
+    total_inc = 0.0
+    for txn in txns_enriched:
+        amt = txn.get("amount") or 0.0
+        if amt > 0:
+            cname = txn.get("category") or "Без категории"
+            by_cat[cname] = by_cat.get(cname, 0.0) + amt
+            total_exp    += amt
+        elif amt < 0:
+            total_inc += (-amt)
+
+    try:
+        pdf_bytes = await asyncio.to_thread(
+            _generate_monthly_pdf,
+            month_name, rep_year, rep_month,
+            by_cat, total_exp, total_inc, txns_enriched,
+        )
+    except Exception as exc:
+        logger.error("handle_report_callback: PDF generation failed: %s", exc)
+        await query.edit_message_text(f"❌ Ошибка генерации PDF: {exc}")
+        return
+
+    import io as _io
+    filename = f"report_{rep_year}_{rep_month:02d}.pdf"
+    caption  = (
+        f"📊 <b>Отчёт за {month_name} {rep_year}</b>\n\n"
+        f"💸 Расходы: {total_exp:,.2f} ₴\n"
+        f"💰 Доходы:  {total_inc:,.2f} ₴\n"
+        f"💼 Баланс:  {total_inc - total_exp:+,.2f} ₴"
+    )
+    await query.message.reply_document(
+        document=_io.BytesIO(pdf_bytes),
+        filename=filename,
+        caption=caption,
+        parse_mode=ParseMode.HTML,
+    )
+    await query.edit_message_text(f"✅ Отчёт за {month_name} {rep_year} готов!")
+
+
+async def send_monthly_report(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB daily job: on the 1st of each month, send analytics PDF for previous month."""
+    cfg     = _cfg(ctx)
+    chat_id = cfg.get("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        return
+
+    now = _local_now()
+    if now.day != 1:
+        return
+
+    # Already sent this month?
+    sent_key = f"monthly_report_{now.year}_{now.month}"
+    if ctx.bot_data.get(sent_key):
+        return
+    ctx.bot_data[sent_key] = True
+
+    notion = _notion(ctx)
+    if not notion:
+        return
+
+    import calendar as _cal
+
+    # Previous month
+    first_of_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_of_prev  = first_of_this - timedelta(seconds=1)
+    prev_year     = last_of_prev.year
+    prev_month    = last_of_prev.month
+    prev_month_name = _MONTHS_RU[prev_month - 1]
+    days_in_prev  = _cal.monthrange(prev_year, prev_month)[1]
+
+    prev_start = last_of_prev.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    prev_end   = last_of_prev
+
+    try:
+        cats_full, txns = await asyncio.gather(
+            asyncio.to_thread(notion.get_categories_full),
+            asyncio.to_thread(notion.get_transactions_by_period, prev_start, prev_end),
+        )
+    except Exception as exc:
+        logger.error("Monthly report: failed to fetch data: %s", exc)
+        return
+
+    txns_enriched = _enrich_txns(txns, cats_full)
+
+    by_cat: dict[str, float] = {}
+    total_exp = 0.0
+    total_inc = 0.0
+    for txn in txns_enriched:
+        amt = txn.get("amount") or 0.0
+        if amt > 0:
+            cname = txn.get("category") or "Без категории"
+            by_cat[cname] = by_cat.get(cname, 0.0) + amt
+            total_exp    += amt
+        elif amt < 0:
+            total_inc += (-amt)
+
+    try:
+        pdf_bytes = await asyncio.to_thread(
+            _generate_monthly_pdf,
+            prev_month_name, prev_year, prev_month,
+            by_cat, total_exp, total_inc, txns_enriched,
+        )
+    except Exception as exc:
+        logger.error("Monthly report: PDF generation failed: %s", exc)
+        await ctx.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"📊 <b>Итоги {prev_month_name} {prev_year}</b>\n\n"
+                f"💸 Расходы: {total_exp:,.2f} ₴\n"
+                f"💰 Доходы:  {total_inc:,.2f} ₴\n"
+                f"💼 Баланс:  {total_inc - total_exp:+,.2f} ₴\n\n"
+                "<i>(PDF не сгенерирован — проверь установку matplotlib)</i>"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    import io as _io
+    filename = f"report_{prev_year}_{prev_month:02d}.pdf"
+    caption  = (
+        f"📊 <b>Отчёт за {prev_month_name} {prev_year}</b>\n\n"
+        f"💸 Расходы: {total_exp:,.2f} ₴\n"
+        f"💰 Доходы:  {total_inc:,.2f} ₴\n"
+        f"💼 Баланс:  {total_inc - total_exp:+,.2f} ₴"
+    )
+    await ctx.bot.send_document(
+        chat_id=chat_id,
+        document=_io.BytesIO(pdf_bytes),
+        filename=filename,
+        caption=caption,
+        parse_mode=ParseMode.HTML,
+    )
+    logger.info("Monthly report sent: %s %d", prev_month_name, prev_year)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Template trigger queue (from /trigger HTTP endpoint)
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -2404,7 +3079,7 @@ async def process_trigger_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         category_id = tpl.get("category_id")
         cat_name   = tpl.get("category_name", "—")
         notes      = tpl.get("notes", "")
-        dt         = datetime.now(tz=timezone.utc)
+        dt         = _local_now()
 
         notion = _notion(ctx)
         saved  = False
@@ -2415,6 +3090,7 @@ async def process_trigger_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
             if saved:
                 _smart_cats.set(desc, category_id, cat_name) if category_id else None
+                _schedule_stats_refresh(ctx)
         else:
             logger.warning("Trigger: Notion not configured — '%s' dropped", desc)
 

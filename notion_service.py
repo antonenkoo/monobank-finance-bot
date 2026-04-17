@@ -314,21 +314,25 @@ class NotionService:
         self, start: "datetime", end: "datetime"
     ) -> list[dict]:
         """
-        Return all transactions in [start, end] (inclusive).
-        Fetches all pages from the DB and filters by date in Python to avoid
-        Notion filter edge-cases (timezone handling, compound filter errors, etc.).
+        Return all transactions in [start, end] using Notion date filter for speed.
         Each item: {"name", "amount" (float, neg=expense), "category_id" (str|None), "date" (str|None)}
         """
-        from datetime import date as _date
-
-        start_date = start.date()
-        end_date   = end.date()
+        start_str = start.date().isoformat()
+        end_str   = end.date().isoformat()
 
         all_pages: list[dict] = []
         cursor: Optional[str] = None
 
         while True:
-            body: dict = {"page_size": 100}
+            body: dict = {
+                "page_size": 100,
+                "filter": {
+                    "and": [
+                        {"property": PROP_DATE, "date": {"on_or_after":  start_str}},
+                        {"property": PROP_DATE, "date": {"on_or_before": end_str}},
+                    ]
+                },
+            }
             if cursor:
                 body["start_cursor"] = cursor
 
@@ -350,23 +354,12 @@ class NotionService:
         for page in all_pages:
             amount_prop = page.get("properties", {}).get(PROP_AMOUNT, {})
             amount      = amount_prop.get("number")
+            if amount is None:
+                continue
 
             date_prop = page.get("properties", {}).get(PROP_DATE, {})
             date_str  = (date_prop.get("date") or {}).get("start")
-
-            # Filter by date range in Python.
-            # Notion date_str is always "YYYY-MM-DD..." so first 10 chars = the date.
-            if date_str:
-                try:
-                    txn_date = _date.fromisoformat(date_str[:10])
-                    if not (start_date <= txn_date <= end_date):
-                        continue
-                except Exception:
-                    continue
-            else:
-                continue  # skip transactions with no date
-
-            if amount is None:
+            if not date_str:
                 continue
 
             cat_prop = page.get("properties", {}).get(PROP_CATEGORIES, {})
@@ -383,10 +376,59 @@ class NotionService:
             })
 
         logger.info(
-            "Loaded %d/%d transactions in range %s–%s",
-            len(transactions), len(all_pages), start_date, end_date,
+            "Loaded %d transactions in range %s–%s",
+            len(transactions), start_str, end_str,
         )
         return transactions
+
+    def get_categories_full(self) -> list[dict]:
+        """
+        Single query to categories DB returning categories with remaining and limit.
+        Each item: {"id", "name", "remaining" (float|None), "limit" (float|None)}
+        Replaces separate get_categories / get_all_category_budgets / get_total_remaining calls.
+        """
+        results: list[dict] = []
+        cursor: Optional[str] = None
+
+        while True:
+            body: dict = {"page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+
+            result = self._request(
+                "POST", f"/databases/{self.categories_db_id}/query", body
+            )
+            if not result:
+                break
+
+            for page in result.get("results", []):
+                name = self._extract_title(page, PROP_CAT_NAME)
+                if not name:
+                    continue
+                cat_id = page["id"]
+                props  = page.get("properties", {})
+
+                rem_prop   = props.get(self.remaining_prop)
+                limit_prop = props.get(self.limit_prop) if self.limit_prop else None
+
+                remaining = self._parse_remaining_prop(rem_prop)   if rem_prop   else None
+                limit     = self._parse_remaining_prop(limit_prop)  if limit_prop else None
+
+                results.append({
+                    "id":        cat_id,
+                    "name":      name,
+                    "remaining": remaining,
+                    "limit":     limit,
+                })
+
+            if result.get("has_more") and result.get("next_cursor"):
+                cursor = result["next_cursor"]
+            else:
+                break
+
+        results.sort(key=lambda c: c["name"].lower())
+        logger.info("get_categories_full: loaded %d categories", len(results))
+        return results
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

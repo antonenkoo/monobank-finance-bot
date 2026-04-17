@@ -16,3 +16,6 @@ requests==2.32.3
 
 # Timezone database (required on Windows)
 tzdata==2025.2
+
+# PDF report generation with charts
+matplotlib==3.10.8
