@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION    = "1.4.4"
+BOT_VERSION    = "1.5"
 
 ENV_PATH       = Path(".env")
 TEMPLATES_PATH = Path("templates.json")

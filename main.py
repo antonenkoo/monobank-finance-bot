@@ -4,6 +4,8 @@ main.py — Entry point for Monobank Finance Bot.
 
 import asyncio
 import logging
+import os
+import subprocess
 import sys
 
 from telegram import BotCommand
@@ -11,10 +13,12 @@ from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, 
 
 from bot_handlers import (
     cancel_handler,
+    cmd_report,
     cmd_stats,
     handle_card_notes_text,
     handle_category_callback,
     handle_notes_skip_callback,
+    handle_report_callback,
     handle_skip_txn_callback,
     make_add_handler,
     make_feedback_handler,
@@ -22,6 +26,8 @@ from bot_handlers import (
     make_templates_handler,
     process_trigger_queue,
     process_webhook_queue,
+    _refresh_stats_cache,
+    send_monthly_report,
     send_startup_message,
 )
 from config_manager import BOT_VERSION, ConfigManager, TemplateManager
@@ -55,6 +61,50 @@ def setup_logging(debug: bool) -> None:
         lg.propagate = False
 
 
+async def cmd_restart(update, context) -> None:
+    """/restart — restart the bot process."""
+    from bot_handlers import _auth
+    if not _auth(update, context):
+        return
+    await update.message.reply_text("🔄 Перезапускаю бота…")
+    await asyncio.sleep(0.5)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+async def cmd_update(update, context) -> None:
+    """/update — git pull + restart."""
+    from bot_handlers import _auth
+    if not _auth(update, context):
+        return
+
+    msg = await update.message.reply_text("⏳ Выполняю git pull…")
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+
+    result = await asyncio.to_thread(
+        lambda: subprocess.run(
+            ["git", "pull"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+        )
+    )
+
+    output = (result.stdout + result.stderr).strip() or "(no output)"
+    if result.returncode != 0:
+        await msg.edit_text(
+            f"❌ git pull завершился с ошибкой:\n<pre>{output}</pre>",
+            parse_mode="HTML",
+        )
+        return
+
+    await msg.edit_text(
+        f"✅ git pull:\n<pre>{output}</pre>\n\n🔄 Перезапускаю…",
+        parse_mode="HTML",
+    )
+    await asyncio.sleep(0.8)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 async def _post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start",           "Главное меню"),
@@ -64,10 +114,16 @@ async def _post_init(app: Application) -> None:
         BotCommand("stats",           "Статистика за месяц"),
         BotCommand("feedback",        "Отправить фидбек разработчику"),
         BotCommand("cancel",          "Отмена текущего действия"),
+        BotCommand("report",          "Сгенерировать PDF-отчёт за месяц"),
+        BotCommand("restart",         "Перезапустить бота"),
+        BotCommand("update",          "git pull + перезапуск"),
     ])
     chat_id = app.bot_data["config"].get("TELEGRAM_CHAT_ID")
     if chat_id:
         await send_startup_message(app.bot, chat_id)
+
+    # Pre-warm stats cache on startup so first /stats is instant
+    app.job_queue.run_once(_refresh_stats_cache, when=5, name="stats_warmup")
 
 
 def _start_webhook(cfg: ConfigManager, bot_data: dict) -> None:
@@ -123,12 +179,16 @@ def main() -> None:
     app.add_handler(make_add_handler())
     app.add_handler(make_templates_handler())
     app.add_handler(make_feedback_handler())
-    app.add_handler(CommandHandler("cancel",   cancel_handler))
-    app.add_handler(CommandHandler("stats",    cmd_stats))
+    app.add_handler(CommandHandler("cancel",    cancel_handler))
+    app.add_handler(CommandHandler("stats",     cmd_stats))
+    app.add_handler(CommandHandler("report",    cmd_report))
+    app.add_handler(CommandHandler("restart",   cmd_restart))
+    app.add_handler(CommandHandler("update",    cmd_update))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 Статистика$"), cmd_stats))
     app.add_handler(CallbackQueryHandler(handle_category_callback,   pattern=r"^cat:"))
     app.add_handler(CallbackQueryHandler(handle_skip_txn_callback,   pattern=r"^skip_txn:"))
     app.add_handler(CallbackQueryHandler(handle_notes_skip_callback, pattern=r"^notes_skip:"))
+    app.add_handler(CallbackQueryHandler(handle_report_callback,     pattern=r"^rpt:"))
 
     # Periodic queue drains
     app.job_queue.run_repeating(
@@ -142,6 +202,13 @@ def main() -> None:
         interval=1.0,
         first=2.0,
         name="trigger_drain",
+    )
+    # Monthly report — checked daily at 09:00 local time; sends on 1st of month
+    import datetime as _dt
+    app.job_queue.run_daily(
+        send_monthly_report,
+        time=_dt.time(9, 0, 0),
+        name="monthly_report",
     )
     # Startup banner
     status   = "✅ настроен" if cfg.is_configured() else "⚠️ требует настройки (/config)"
