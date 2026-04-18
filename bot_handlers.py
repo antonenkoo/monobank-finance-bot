@@ -12,6 +12,7 @@ Amount display convention (user-facing only):
 
 import asyncio
 import logging
+import os
 import random
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -52,11 +53,13 @@ from smart_categories import SmartCategoryStore
 logger = logging.getLogger(__name__)
 
 
+# Текущее время с таймзоной (безопасно на Windows)
 def _local_now() -> datetime:
     """Current local time with timezone offset (e.g. +02:00). Safe on Windows."""
     return datetime.now().astimezone()
 
 
+# Парсинг строки даты в datetime с таймзоной
 def _parse_local_dt(s: str) -> datetime:
     """Parse 'DD.MM.YYYY HH:MM' as local time with timezone offset."""
     return datetime.strptime(s, "%d.%m.%Y %H:%M").astimezone()
@@ -96,6 +99,7 @@ _STARTUP_MESSAGES = [
 _RELEASE_SHOWN_FILE = Path("release_shown.txt")
 
 
+# Получить последнюю показанную версию из файла
 def _get_shown_version() -> str:
     try:
         return _RELEASE_SHOWN_FILE.read_text(encoding="utf-8").strip()
@@ -103,6 +107,7 @@ def _get_shown_version() -> str:
         return ""
 
 
+# Отметить версию как показанную
 def _mark_release_shown(version: str) -> None:
     try:
         _RELEASE_SHOWN_FILE.write_text(version, encoding="utf-8")
@@ -110,6 +115,7 @@ def _mark_release_shown(version: str) -> None:
         logger.warning("Could not write release_shown.txt: %s", exc)
 
 
+# Отправить приветствие при старте или обновлении
 async def send_startup_message(bot: Bot, chat_id: str) -> None:
     """Send a random friendly startup message; show release notes once per version."""
     shown_ver = _get_shown_version()
@@ -145,15 +151,17 @@ async def send_startup_message(bot: Bot, chat_id: str) -> None:
 # Static ReplyKeyboards
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Создать ReplyKeyboardMarkup из строк кнопок
 def _kb(*rows: list[str], one_time: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(list(rows), resize_keyboard=True, one_time_keyboard=one_time)
 
 
 MAIN_KB = _kb(["➕ Добавить", "📋 Шаблоны"], ["📊 Статистика", "⚙️ Настройки"], ["📝 Фидбек"])
 
+# Клавиатура главного меню настроек
 def _settings_kb(mode: str, notes: bool = True, smart_cats: bool = True) -> ReplyKeyboardMarkup:
     """Settings menu keyboard with mode-toggle, notes-toggle and smart-cats-toggle buttons."""
-    mode_toggle   = "🔔 Про режим"            if mode       == "silent" else "🔇 Тихий режим"
+    mode_toggle   = "🔔 Детальный режим"            if mode       == "silent" else "🔇 Тихий режим"
     notes_toggle  = "💬 Заметки: вкл"         if notes      else "💬 Заметки: выкл"
     smart_toggle  = "🧠 Авто-категории: вкл"  if smart_cats else "🧠 Авто-категории: выкл"
     return _kb(["⚙️ Конфигурация"], [mode_toggle], [notes_toggle], [smart_toggle], ["📋 Версия"], ["◀️ Назад"])
@@ -184,6 +192,7 @@ BACK_KB   = _kb(["◀️ Назад"])
 
 # ── Dynamic keyboards ──────────────────────────────────────────────────────────
 
+# Клавиатура полей конфигурации
 def _config_fields_kb() -> ReplyKeyboardMarkup:
     rows = [[FIELD_LABELS[f]] for f in EDITABLE_FIELDS]
     rows.append(["📋 Выбрать аккаунт Monobank"])
@@ -191,12 +200,14 @@ def _config_fields_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
+# Клавиатура выбора аккаунта Монобанка
 def _accounts_kb(labels: list[str]) -> ReplyKeyboardMarkup:
     rows = [[lbl] for lbl in labels]
     rows.append(["◀️ Назад"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
+# Клавиатура выбора категории Notion
 def _categories_kb(cats: list[dict]) -> ReplyKeyboardMarkup:
     rows: list[list[str]] = []
     for i in range(0, len(cats), 2):
@@ -210,6 +221,7 @@ def _categories_kb(cats: list[dict]) -> ReplyKeyboardMarkup:
 
 
 
+# Клавиатура списка шаблонов
 def _templates_kb(templates: list[dict]) -> ReplyKeyboardMarkup:
     rows = [[t["name"]] for t in templates]
     rows.append(["◀️ Назад"])
@@ -267,12 +279,15 @@ _MONTHS_RU = [
 # Core helpers
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Получить ConfigManager из bot_data
 def _cfg(ctx: ContextTypes.DEFAULT_TYPE) -> ConfigManager:
     return ctx.bot_data["config"]
 
+# Получить TemplateManager из bot_data
 def _tpl(ctx: ContextTypes.DEFAULT_TYPE) -> TemplateManager:
     return ctx.bot_data["templates"]
 
+# Получить NotionService (None если не настроен)
 def _notion(ctx: ContextTypes.DEFAULT_TYPE) -> Optional[NotionService]:
     cfg = _cfg(ctx)
     if not (cfg.get("NOTION_API_KEY") and cfg.get("NOTION_TRANSACTIONS_DB_ID")
@@ -286,10 +301,12 @@ def _notion(ctx: ContextTypes.DEFAULT_TYPE) -> Optional[NotionService]:
         limit_prop=cfg.get("NOTION_LIMIT_PROP", ""),
     )
 
+# Проверка авторизации — только владелец бота
 def _auth(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = _cfg(ctx).get("TELEGRAM_CHAT_ID")
     return not chat_id or str(update.effective_chat.id) == chat_id
 
+# Попытаться перезапустить вебхук Монобанка
 def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cfg  = _cfg(ctx)
     mono = cfg.get("MONOBANK_TOKEN")
@@ -297,10 +314,10 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     t = restart_webhook_server(
         port=cfg.get_webhook_port(),
-        ngrok_token=cfg.get("NGROK_AUTH_TOKEN"),
+        ngrok_token=None,  # ngrok owned by feedback-bot, not monobank-bot
         mono_token=mono,
         account_id=cfg.get("MONOBANK_ACCOUNT_ID"),
-        ngrok_domain=cfg.get("NGROK_DOMAIN", ""),
+        ngrok_domain="",
     )
     ctx.bot_data["webhook_started"] = True
     ctx.bot_data["webhook_thread"]  = t
@@ -308,10 +325,12 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── Amount display ─────────────────────────────────────────────────────────────
 
+# Форматировать сумму для отображения (перевернуть знак для юзера)
 def _disp(amount: float) -> str:
     """expense (neg internally) → shown as positive; income (pos internally) → shown as negative."""
     return f"{-amount:,.2f} ₴"
 
+# Сумма + тип (Расход/Доход)
 def _disp_with_type(amount: float) -> str:
     t = "расход" if amount < 0 else "доход"
     return f"{_disp(amount)} ({t})"
@@ -319,21 +338,24 @@ def _disp_with_type(amount: float) -> str:
 
 # ── Main menu text ─────────────────────────────────────────────────────────────
 
+# Текст главного меню с балансом
 def _menu_text(cfg: ConfigManager) -> str:
     mode = cfg.get_mode()
-    mode_label = "🔔 Про" if mode == "pro" else "🔇 Тихий"
+    mode_label = "🔔 Детальный" if mode == "pro" else "🔇 Тихий"
     return (
         "🏠 <b>Главное меню</b>\n\n"
         "Используй кнопки внизу экрана.\n\n"
         f"Режим: {mode_label}"
     )
 
+# Отправить главное меню
 async def _main_menu(msg: Message, cfg: ConfigManager) -> None:
     await msg.reply_text(_menu_text(cfg), parse_mode=ParseMode.HTML, reply_markup=MAIN_KB)
 
 
 # ── Category loader ────────────────────────────────────────────────────────────
 
+# Загрузить категории из Notion (с кэшированием)
 async def _load_cats(ctx: ContextTypes.DEFAULT_TYPE) -> tuple[list[dict], dict[str, str]]:
     if "cat_map" not in ctx.user_data:
         notion = _notion(ctx)
@@ -350,6 +372,7 @@ async def _load_cats(ctx: ContextTypes.DEFAULT_TYPE) -> tuple[list[dict], dict[s
 # /start  and  /debug  (standalone — not inside any conversation)
 # ═════════════════════════════════════════════════════════════════════════════
 
+# /start — главное меню
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     cfg = _cfg(ctx)
     uid = str(update.effective_chat.id)
@@ -377,6 +400,7 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 # Settings / Config conversation
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Статус конфигурации для отображения
 def _cfg_status(cfg: ConfigManager) -> str:
     lines = ["⚙️ <b>Конфигурация бота</b>\n"]
     for f in EDITABLE_FIELDS:
@@ -403,7 +427,7 @@ _CHANGELOG: dict[str, str] = {
     "v1.1": (
         "📋 <b>v1.1 — Шаблоны и режимы</b>\n\n"
         "• Шаблоны — сохраняй и запускай повторяющиеся транзакции в один клик\n"
-        "• Режим 🔔 Про — каждая трата → сообщение с выбором категории\n"
+        "• Режим 🔔 Детальный — каждая трата → сообщение с выбором категории\n"
         "• Режим 🔇 Тихий — Monobank сохраняется автоматически без уведомлений\n"
         "• Остаток по категории после каждого сохранения\n"
         "• Стартовое сообщение при запуске бота\n"
@@ -418,7 +442,7 @@ _CHANGELOG: dict[str, str] = {
     "v1.2.1": (
         "💬 <b>v1.2.1 — Заметки и отмена</b>\n\n"
         "• Заметки к транзакциям Monobank — бот спрашивает комментарий после выбора категории\n"
-        "• Кнопка ❌ Не сохранять — отменить сохранение прямо из сообщения (Про режим)\n"
+        "• Кнопка ❌ Не сохранять — отменить сохранение прямо из сообщения (Детальный режим)\n"
         "• Переключатель заметок в ⚙️ Настройки (можно выключить)\n"
         "• Стартовое сообщение теперь показывает главное меню\n"
         "• Расширен набор стартовых фраз — 21 штука"
@@ -497,6 +521,7 @@ _VERSION_KB = _kb(
 )
 
 
+# Вход в настройки (/config)
 async def settings_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update, ctx):
         return ConversationHandler.END
@@ -508,6 +533,7 @@ async def settings_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return SETTINGS_MENU
 
 
+# Выбор раздела в настройках
 async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t   = update.message.text.strip()
     cfg = _cfg(ctx)
@@ -525,10 +551,10 @@ async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
         )
         return CONF_MENU
 
-    if t == "🔔 Про режим":
+    if t == "🔔 Детальный режим":
         cfg.set_mode("pro")
         await update.message.reply_text(
-            "🔔 <b>Про режим включён!</b>\n\n"
+            "🔔 <b>Детальный режим включён!</b>\n\n"
             "Каждая транзакция Monobank → сообщение в чат с выбором категории.",
             parse_mode=ParseMode.HTML,
             reply_markup=_kb_now(),
@@ -597,6 +623,7 @@ async def settings_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
     return SETTINGS_MENU
 
 
+# Просмотр истории версий
 async def settings_version(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -619,6 +646,7 @@ async def settings_version(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
     return SETTINGS_VERSION
 
 
+# Выбор поля конфигурации
 async def conf_menu_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t   = update.message.text.strip()
     cfg = _cfg(ctx)
@@ -682,6 +710,7 @@ async def conf_menu_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
     return CONF_MENU
 
 
+# Ожидание нового значения поля конфигурации
 async def conf_wait_value(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -722,6 +751,7 @@ async def conf_wait_value(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
     return CONF_MENU
 
 
+# Выбор аккаунта Монобанка из списка
 async def conf_pick_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t   = update.message.text.strip()
     cfg = _cfg(ctx)
@@ -756,12 +786,14 @@ async def conf_pick_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> i
     return CONF_MENU
 
 
+# Выход из настроек
 async def settings_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Отменено.")
     await _main_menu(update.message, _cfg(ctx))
     return ConversationHandler.END
 
 
+# Создать ConversationHandler для настроек
 def make_settings_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
@@ -860,6 +892,7 @@ async def _show_category(msg: Message, ctx: ContextTypes.DEFAULT_TYPE, mode: str
 
 # ── Entry points ───────────────────────────────────────────────────────────────
 
+# Вход в поток добавления транзакции (/add)
 async def add_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update, ctx):
         return ConversationHandler.END
@@ -869,6 +902,7 @@ async def add_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return await _show_desc(update.message, "add")
 
 
+# Вход в создание шаблона
 async def create_template_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update, ctx):
         return ConversationHandler.END
@@ -880,6 +914,7 @@ async def create_template_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) 
 
 # ── Step handlers ──────────────────────────────────────────────────────────────
 
+# Ввод описания транзакции
 async def add_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t    = update.message.text.strip()
     mode = ctx.user_data.get("mode", "add")
@@ -893,6 +928,7 @@ async def add_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return await _show_amount(update.message, mode)
 
 
+# Ввод суммы транзакции
 async def add_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t    = update.message.text.strip()
     mode = ctx.user_data.get("mode", "add")
@@ -915,6 +951,7 @@ async def add_amount(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return await _show_sign(update.message, mode, amt)
 
 
+# Выбор знака (расход/доход)
 async def add_sign(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t    = update.message.text.strip()
     mode = ctx.user_data.get("mode", "add")
@@ -940,6 +977,7 @@ async def add_sign(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return await _show_time(update.message)
 
 
+# Выбор времени транзакции
 async def add_time_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t    = update.message.text.strip()
     mode = ctx.user_data.get("mode", "add")
@@ -965,6 +1003,7 @@ async def add_time_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
     return ADD_TIME_CHOICE
 
 
+# Ввод своего времени
 async def add_custom_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t    = update.message.text.strip()
     mode = ctx.user_data.get("mode", "add")
@@ -998,6 +1037,7 @@ async def add_notes(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return await _show_category(update.message, ctx, mode)
 
 
+# Выбор категории из списка
 async def add_category_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle category selection from the ReplyKeyboard in the manual add/template flow."""
     t    = update.message.text.strip()
@@ -1033,6 +1073,7 @@ async def add_category_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> i
 
 # ── Finalize helpers ───────────────────────────────────────────────────────────
 
+# Сохранить как шаблон
 async def _finalize_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     desc  = ctx.user_data["add_desc"]
     amt   = ctx.user_data["add_amount"]
@@ -1055,6 +1096,7 @@ async def _finalize_template(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+# Финальное сохранение транзакции в Notion
 async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     desc   = ctx.user_data["add_desc"]
     amt    = ctx.user_data["add_amount"]
@@ -1123,6 +1165,7 @@ async def _finalize_add(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ── Save-as-template offer ─────────────────────────────────────────────────────
 
+# Подтверждение сохранения транзакции
 async def add_save_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -1140,6 +1183,7 @@ async def add_save_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+# Ввод имени шаблона
 async def add_tpl_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -1168,6 +1212,7 @@ async def add_tpl_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ── Cancel ─────────────────────────────────────────────────────────────────────
 
+# Отмена добавления транзакции
 async def add_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     ctx.user_data.clear()
     await update.message.reply_text("❌ Отменено.")
@@ -1175,6 +1220,7 @@ async def add_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# Создать ConversationHandler для добавления транзакций
 def make_add_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
@@ -1268,6 +1314,7 @@ async def _show_tpl_edit_menu(msg: Message, ctx: ContextTypes.DEFAULT_TYPE) -> i
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
+# Вход в браузер шаблонов
 async def templates_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update, ctx):
         return ConversationHandler.END
@@ -1277,6 +1324,7 @@ async def templates_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int
 
 # ── TPL_MENU ───────────────────────────────────────────────────────────────────
 
+# Главный экран шаблонов
 async def tpl_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -1295,6 +1343,7 @@ async def tpl_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ── TPL_DETAIL ─────────────────────────────────────────────────────────────────
 
+# Детали выбранного шаблона
 async def tpl_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -1324,6 +1373,7 @@ async def tpl_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ── TPL_USE_TIME ───────────────────────────────────────────────────────────────
 
+# Выбор времени применения шаблона
 async def tpl_use_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
@@ -1713,6 +1763,7 @@ async def _fetch_cats(ctx: ContextTypes.DEFAULT_TYPE) -> list[dict]:
 
 
 
+# Обработать очередь вебхука Монобанка (Про/Тихий режим)
 async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cfg     = _cfg(ctx)
     chat_id = cfg.get("TELEGRAM_CHAT_ID")
@@ -1796,6 +1847,7 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # Category callback handler (inline buttons on transaction messages)
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Пользователь выбрал категорию → шаг заметки
 async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """User picked a category → transition to notes step."""
     query = update.callback_query
@@ -1854,6 +1906,7 @@ async def handle_category_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         logger.error("Failed to edit message for notes prompt: %s", exc)
 
 
+# Пропустить транзакцию без сохранения
 async def handle_skip_txn_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """User explicitly chose NOT to save the transaction."""
     query = update.callback_query
@@ -1874,6 +1927,7 @@ async def handle_skip_txn_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         logger.error("Failed to edit message after skip: %s", exc)
 
 
+# Пропустить заметку → сохранить в Notion
 async def handle_notes_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """User chose to save without a note."""
     query = update.callback_query
@@ -2292,6 +2346,7 @@ async def _build_stats_text(notion: "NotionService") -> str:
     return "\n".join(parts)
 
 
+# Обновить кэш статистики в фоне
 async def _refresh_stats_cache(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """PTB job: rebuild stats cache in background. Skips if already running."""
     if ctx.bot_data.get("stats_refreshing"):
@@ -2310,6 +2365,7 @@ async def _refresh_stats_cache(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx.bot_data["stats_refreshing"] = False
 
 
+# Запланировать обновление кэша статистики
 def _schedule_stats_refresh(ctx: ContextTypes.DEFAULT_TYPE, delay: float = 5.0) -> None:
     """Schedule a background stats rebuild after a transaction is saved."""
     try:
@@ -2339,12 +2395,18 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cache = ctx.bot_data.get("stats_cache")
 
     if cache:
-        age_sec = (_local_now() - cache["updated_at"]).total_seconds()
-        age_min = int(age_sec // 60)
-        if age_min == 0:
+        age_sec = int((_local_now() - cache["updated_at"]).total_seconds())
+        if age_sec < 60:
             freshness = "<i>🟢 только что обновлено</i>"
         else:
-            freshness = f"<i>🕐 обновлено {age_min} мин. назад</i>"
+            days, rem = divmod(age_sec, 86400)
+            hours, rem = divmod(rem, 3600)
+            mins = rem // 60
+            parts = []
+            if days:  parts.append(f"{days} д.")
+            if hours: parts.append(f"{hours} ч.")
+            if mins or not parts: parts.append(f"{mins} мин.")
+            freshness = f"<i>🕐 обновлено {' '.join(parts)} назад</i>"
 
         await update.message.reply_text(
             cache["text"] + f"\n\n{freshness}",
@@ -2373,27 +2435,30 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # Feedback conversation (all users can submit, no _auth required)
 # ═════════════════════════════════════════════════════════════════════════════
 
-FEEDBACK_TYPE = 100
-FEEDBACK_TEXT = 101
+FEEDBACK_TYPE  = 100
+FEEDBACK_TEXT  = 101
+FEEDBACK_VOICE = 102
 
-# Static developer ngrok URL — used when DEVELOPER_FEEDBACK_URL is not set in .env
-_DEVELOPER_FEEDBACK_URL = "https://blousily-uncatechized-tanja.ngrok-free.dev"
+_DEVELOPER_FEEDBACK_URL = os.getenv("DEVELOPER_FEEDBACK_URL") or os.getenv("FEEDBACK_BOT_URL", "")
 
-_FEEDBACK_TYPE_KB = _kb(["🐛 Баг", "✨ Фича"], ["◀️ Назад"])
+_FEEDBACK_TYPE_KB = _kb(["🐛 Баг", "🌟 Хотелка"], ["◀️ Назад"])
 _FEEDBACK_BACK_KB = _kb(["◀️ Назад"])
 
 
+# Точка входа в фидбек (/feedback или кнопка)
 async def feedback_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /feedback command or 📝 Фидбек button."""
     await update.message.reply_html(
         "📝 <b>Обратная связь</b>\n\n"
-        "Выбери тип заявки:",
-        reply_markup=_FEEDBACK_TYPE_KB,
+        "Опиши проблему или идею.\n"
+        "Можно отправить текст или 🎤 голосовое сообщение.",
+        reply_markup=_FEEDBACK_BACK_KB,
     )
-    return FEEDBACK_TYPE
+    return FEEDBACK_TEXT
 
 
-async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+# Обработка текстового фидбека
+async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
     if t == "◀️ Назад":
@@ -2401,53 +2466,60 @@ async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await _main_menu(update.message, cfg)
         return ConversationHandler.END
 
-    if t not in ("🐛 Баг", "✨ Фича"):
-        await update.message.reply_text("Выбери тип:", reply_markup=_FEEDBACK_TYPE_KB)
-        return FEEDBACK_TYPE
-
-    ctx.user_data["feedback_type"] = "bug" if t == "🐛 Баг" else "feature"
-    label = "🐛 баг" if t == "🐛 Баг" else "✨ запрос фичи"
-
+    ctx.user_data["feedback_draft"] = t
     await update.message.reply_html(
-        f"Тип: <b>{label}</b>\n\n"
-        "Опиши проблему или идею подробнее.\n"
-        "<i>Твоё сообщение останется в чате как есть.</i>",
-        reply_markup=_FEEDBACK_BACK_KB,
+        "Выбери тип заявки:",
+        reply_markup=_FEEDBACK_TYPE_KB,
     )
-    return FEEDBACK_TEXT
+    return FEEDBACK_TYPE
 
 
-async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+# Выбор типа фидбека (Баг/Фича) и отправка
+async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     t = update.message.text.strip()
 
     if t == "◀️ Назад":
         await update.message.reply_html(
-            "📝 <b>Обратная связь</b>\n\nВыбери тип заявки:",
-            reply_markup=_FEEDBACK_TYPE_KB,
+            "📝 <b>Обратная связь</b>\n\n"
+            "Опиши проблему или идею.\n"
+            "Можно отправить текст или 🎤 голосовое сообщение.",
+            reply_markup=_FEEDBACK_BACK_KB,
         )
+        return FEEDBACK_TEXT
+
+    if t not in ("🐛 Баг", "🌟 Хотелка"):
+        await update.message.reply_text("Выбери тип:", reply_markup=_FEEDBACK_TYPE_KB)
         return FEEDBACK_TYPE
 
-    # Build payload — no sensitive info (no chat_id), only username + user_id
+    fb_type = "bug" if t == "🐛 Баг" else "feature"
+    text    = ctx.user_data.pop("feedback_draft", "")
+
     user     = update.message.from_user
     username = user.username or user.first_name or str(user.id)
     payload  = {
         "project":       "monobank-finance-bot",
-        "type":          ctx.user_data.get("feedback_type", "bug"),
-        "text":          t,
+        "type":          fb_type,
+        "text":          text,
         "from_user_id":  user.id,
         "from_username": username,
         "timestamp":     datetime.now(tz=timezone.utc).isoformat(),
         "version":       BOT_VERSION,
     }
 
-    # POST to developer's ngrok (configured URL takes priority, static fallback always available)
-    cfg = _cfg(ctx)
+    cfg     = _cfg(ctx)
     dev_url = cfg.get("DEVELOPER_FEEDBACK_URL", "").strip() or _DEVELOPER_FEEDBACK_URL
-    sent = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
-    if not sent:
+    result  = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
+    if not result:
         logger.warning("Feedback POST failed to %s", dev_url)
 
-    type_label = "🐛 Баг" if payload["type"] == "bug" else "✨ Запрос фичи"
+    # If this was a voice feedback, also send the voice file
+    ogg   = ctx.user_data.pop("feedback_voice_ogg", None)
+    trans = ctx.user_data.pop("feedback_voice_trans", "")
+    if ogg:
+        feedback_id = result if isinstance(result, str) else "unknown"
+        await asyncio.to_thread(_http_post_voice, dev_url, ogg, feedback_id, trans)
+
+    type_label = "🐛 Баг" if fb_type == "bug" else "🌟 Хотелка"
     await update.message.reply_html(
         f"✅ <b>Заявка принята!</b>\n\n"
         f"{type_label}\n\n"
@@ -2457,14 +2529,79 @@ async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# Транскрипция голосового фидбека
+async def feedback_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """Transcribe voice silently, ask user to confirm without showing transcription."""
+    import voice_handler
+    voice   = update.message.voice
+    tg_file = await ctx.bot.get_file(voice.file_id)
+    ogg     = await tg_file.download_as_bytearray()
+
+    transcription = await asyncio.to_thread(voice_handler.transcribe, bytes(ogg))
+
+    ctx.user_data["feedback_draft"]        = transcription or "[голосовое сообщение без расшифровки]"
+    ctx.user_data["feedback_voice_ogg"]    = bytes(ogg)
+    ctx.user_data["feedback_voice_trans"]  = transcription or ""
+    ctx.user_data["feedback_voice_msg_id"] = update.message.message_id
+
+    await update.message.reply_text(
+        "🎤 Голосовое получено. Всё верно?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да", callback_data="fbv:confirm"),
+            InlineKeyboardButton("✏️ Переписать", callback_data="fbv:retry"),
+        ]]),
+    )
+    return FEEDBACK_VOICE
+
+
+# Подтверждение/отмена голосового фидбека
+async def feedback_voice_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+
+    if query.data == "fbv:retry":
+        voice_msg_id = ctx.user_data.pop("feedback_voice_msg_id", None)
+        ctx.user_data.pop("feedback_draft", None)
+        ctx.user_data.pop("feedback_voice_ogg", None)
+        ctx.user_data.pop("feedback_voice_trans", None)
+        # Delete the confirm prompt and the original voice message
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        if voice_msg_id:
+            try:
+                await query.bot.delete_message(chat_id, voice_msg_id)
+            except Exception:
+                pass
+        await ctx.bot.send_message(
+            chat_id,
+            "📝 Опиши проблему или идею.\nМожно отправить текст или 🎤 голосовое сообщение.",
+            reply_markup=_FEEDBACK_BACK_KB,
+        )
+        return FEEDBACK_TEXT
+
+    # confirmed — remove inline buttons, ask for type via new message
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await ctx.bot.send_message(chat_id, "Выбери тип заявки:", reply_markup=_FEEDBACK_TYPE_KB)
+    return FEEDBACK_TYPE
+
+
+# Отмена фидбека
 async def feedback_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     cfg = _cfg(ctx)
     await _main_menu(update.message, cfg)
     return ConversationHandler.END
 
 
-def _http_post_feedback(url: str, payload: dict) -> bool:
-    """Synchronous HTTP POST (runs in thread via asyncio.to_thread)."""
+# HTTP POST фидбека в feedback-bot (синхронный, запускается в потоке)
+def _http_post_feedback(url: str, payload: dict) -> str | bool:
+    """POST feedback, return feedback_id string on success or False on failure."""
     import json as _json
     import urllib.request as _req
     data = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -2476,12 +2613,43 @@ def _http_post_feedback(url: str, payload: dict) -> bool:
     )
     try:
         with _req.urlopen(request, timeout=6) as resp:
-            return resp.status == 200
+            body = _json.loads(resp.read())
+            return body.get("id", True)
     except Exception as exc:
         logger.debug("_http_post_feedback error: %s", exc)
         return False
 
 
+# HTTP POST голосового файла в feedback-bot (multipart)
+def _http_post_voice(url: str, ogg: bytes, feedback_id: str, transcription: str) -> None:
+    """POST voice file as multipart/form-data to /feedback/voice."""
+    import io
+    import urllib.request as _req
+    boundary = b"----TGVoiceBoundary"
+    body = b""
+    for name, value in (("feedback_id", feedback_id.encode()), ("transcription", transcription.encode("utf-8"))):
+        body += b"--" + boundary + b"\r\n"
+        body += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        body += value + b"\r\n"
+    body += b"--" + boundary + b"\r\n"
+    body += b'Content-Disposition: form-data; name="file"; filename="voice.ogg"\r\n'
+    body += b"Content-Type: audio/ogg\r\n\r\n"
+    body += ogg + b"\r\n"
+    body += b"--" + boundary + b"--\r\n"
+    request = _req.Request(
+        url.rstrip("/") + "/feedback/voice",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
+        method="POST",
+    )
+    try:
+        with _req.urlopen(request, timeout=10):
+            pass
+    except Exception as exc:
+        logger.debug("_http_post_voice error: %s", exc)
+
+
+# Создать ConversationHandler для фидбека
 def make_feedback_handler() -> ConversationHandler:
     """ConversationHandler for the feedback flow. No auth — open to all users."""
     return ConversationHandler(
@@ -2490,11 +2658,16 @@ def make_feedback_handler() -> ConversationHandler:
             MessageHandler(filters.Regex(r"^📝 Фидбек$"), feedback_start),
         ],
         states={
-            FEEDBACK_TYPE: [MessageHandler(_TXT, feedback_type)],
-            FEEDBACK_TEXT: [MessageHandler(_TXT, feedback_text)],
+            FEEDBACK_TEXT: [
+                MessageHandler(_TXT, feedback_text),
+                MessageHandler(filters.VOICE, feedback_voice),
+            ],
+            FEEDBACK_TYPE:  [MessageHandler(_TXT, feedback_type)],
+            FEEDBACK_VOICE: [CallbackQueryHandler(feedback_voice_confirm, pattern=r"^fbv:")],
         },
         fallbacks=[CommandHandler("cancel", feedback_cancel)],
         per_user=True, per_chat=True, per_message=False,
+        allow_reentry=True,
     )
 
 
@@ -2970,6 +3143,7 @@ async def handle_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(f"✅ Отчёт за {month_name} {rep_year} готов!")
 
 
+# Отправить PDF-отчёт (запускается каждый день, отправляет только 1-го числа)
 async def send_monthly_report(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """PTB daily job: on the 1st of each month, send analytics PDF for previous month."""
     cfg     = _cfg(ctx)
@@ -3070,6 +3244,7 @@ async def send_monthly_report(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # Template trigger queue (from /trigger HTTP endpoint)
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Обработать очередь быстрых шаблонов
 async def process_trigger_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """PTB job: drain trigger_queue, save each template transaction to Notion + notify."""
     cfg     = _cfg(ctx)
