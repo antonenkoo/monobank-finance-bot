@@ -115,23 +115,48 @@ def _mark_release_shown(version: str) -> None:
         logger.warning("Could not write release_shown.txt: %s", exc)
 
 
+# Сравнить две версии семантически: возвращает True если a > b
+def _ver_gt(a: str, b: str) -> bool:
+    def _parts(v: str):
+        return [int(x) for x in v.lstrip("v").split(".")]
+    try:
+        return _parts(a) > _parts(b)
+    except Exception:
+        return a != b
+
+
 # Отправить приветствие при старте или обновлении
 async def send_startup_message(bot: Bot, chat_id: str) -> None:
-    """Send a random friendly startup message; show release notes once per version."""
-    shown_ver = _get_shown_version()
+    """Show release notes for every version missed since last launch, then greet."""
+    shown_ver = _get_shown_version()  # e.g. "1.3" or ""
 
     if shown_ver != BOT_VERSION:
+        # Collect all versions newer than what user last saw, in chronological order
+        missed = [
+            v for v in reversed(_VERSIONS_ORDERED)
+            if _ver_gt(v, f"v{shown_ver}" if shown_ver else "v0")
+        ]
+        for ver_key in missed:
+            notes = _CHANGELOG.get(ver_key, f"🚀 <b>{ver_key}</b>")
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=notes,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:
+                logger.error("Failed to send release notes for %s: %s", ver_key, exc)
+
+        _mark_release_shown(BOT_VERSION)
         try:
-            notes = _CHANGELOG.get(f"v{BOT_VERSION}", f"🚀 <b>v{BOT_VERSION}</b>")
             await bot.send_message(
                 chat_id=chat_id,
-                text=notes,
+                text=f"Ты на актуальной версии <b>v{BOT_VERSION}</b> 🎉",
                 parse_mode=ParseMode.HTML,
                 reply_markup=MAIN_KB,
             )
-            _mark_release_shown(BOT_VERSION)
         except Exception as exc:
-            logger.error("Failed to send release notes: %s", exc)
+            logger.error("Failed to send post-update greeting: %s", exc)
         return
 
     try:
@@ -507,12 +532,29 @@ _CHANGELOG: dict[str, str] = {
         "🕐 <b>Время при ручном добавлении</b>\n"
         "При добавлении транзакции вручную время отображалось в UTC вместо местного — исправлено"
     ),
+    "v1.5.1": (
+        "🔧 <b>v1.5.1 — Голосовой фидбек & стабилизация</b>\n"
+        "───────────────────────\n\n"
+        "🎤 <b>Голосовой фидбек</b>\n"
+        "Теперь фидбек можно отправить голосовым сообщением. Бот транскрибирует его и спрашивает подтверждение — при отказе удаляет голосовое и предлагает записать заново\n\n"
+        "♻️ <b>Переименования</b>\n"
+        "«Про режим» → «Детальный режим»\n"
+        "«Фича» → «🌟 Хотелка»\n\n"
+        "⚙️ <b>Команда /update</b>\n"
+        "После git pull автоматически запускает pip install -r requirements.txt\n\n"
+        "🐛 <b>Исправления</b>\n"
+        "Фидбек теперь стабильно доходит — исправлен конфликт ngrok между ботами"
+    ),
 }
 
-_VERSIONS_ORDERED = ["v1.5", "v1.4.4", "v1.4.3", "v1.4.2", "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0"]
+_VERSIONS_ORDERED = [
+    "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
+    "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0",
+]
 
 _VERSION_KB = _kb(
-    ["v1.5",   "v1.4.4"],
+    ["v1.5.1", "v1.5"],
+    ["v1.4.4", "v1.4.3"],
     ["v1.4.2", "v1.4.1"],
     ["v1.4.0", "v1.2.1"],
     ["v1.2",   "v1.1"],
