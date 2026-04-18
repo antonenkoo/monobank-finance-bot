@@ -2,6 +2,10 @@
 main.py — Entry point for Monobank Finance Bot.
 """
 
+# load_dotenv before all other imports — bot_handlers reads os.getenv() at module level
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 import logging
 import os
@@ -98,7 +102,28 @@ async def cmd_update(update, context) -> None:
         return
 
     await msg.edit_text(
-        f"✅ git pull:\n<pre>{output}</pre>\n\n🔄 Перезапускаю…",
+        f"✅ git pull:\n<pre>{output}</pre>\n\n📦 Устанавливаю зависимости…",
+        parse_mode="HTML",
+    )
+
+    pip_result = await asyncio.to_thread(
+        lambda: subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--quiet"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+        )
+    )
+    pip_output = (pip_result.stdout + pip_result.stderr).strip() or "(no output)"
+    if pip_result.returncode != 0:
+        await msg.edit_text(
+            f"❌ pip install завершился с ошибкой:\n<pre>{pip_output}</pre>",
+            parse_mode="HTML",
+        )
+        return
+
+    await msg.edit_text(
+        f"✅ git pull:\n<pre>{output}</pre>\n\n✅ Зависимости установлены\n\n🔄 Перезапускаю…",
         parse_mode="HTML",
     )
     await asyncio.sleep(0.8)
@@ -137,10 +162,10 @@ def _start_webhook(cfg: ConfigManager, bot_data: dict) -> None:
 
     thread = run_webhook_server(
         port=cfg.get_webhook_port(),
-        ngrok_token=cfg.get("NGROK_AUTH_TOKEN"),
+        ngrok_token=None,  # ngrok owned by feedback-bot
         mono_token=mono_token,
         account_id=cfg.get("MONOBANK_ACCOUNT_ID"),
-        ngrok_domain=cfg.get("NGROK_DOMAIN", ""),
+        ngrok_domain="",
     )
     bot_data["webhook_started"] = True
     bot_data["webhook_thread"]  = thread

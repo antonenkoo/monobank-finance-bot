@@ -19,3 +19,4 @@ tzdata==2025.2
 
 # PDF report generation with charts
 matplotlib==3.10.8
+faster-whisper
