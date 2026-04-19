@@ -404,6 +404,18 @@ def stop_webhook_server() -> None:
         _server_instance.should_exit = True
 
 
+async def shutdown_ngrok() -> None:
+    """Close the ngrok listener so the reserved domain is free for the next run."""
+    global _ngrok_listener
+    if _ngrok_listener is not None:
+        try:
+            await _ngrok_listener.close()
+            logger.info("Ngrok listener closed")
+        except Exception as exc:
+            logger.warning("Ngrok close failed: %s", exc)
+        _ngrok_listener = None
+
+
 def run_webhook_server(
     port: int,
     ngrok_token: str,

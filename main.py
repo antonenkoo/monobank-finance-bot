@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
@@ -35,7 +36,10 @@ from bot_handlers import (
     send_startup_message,
 )
 from config_manager import BOT_VERSION, ConfigManager, TemplateManager
-from monobank_service import run_webhook_server
+from monobank_service import run_webhook_server, shutdown_ngrok, stop_webhook_server
+
+
+_restart_requested = False
 
 
 def setup_logging(debug: bool) -> None:
@@ -66,13 +70,14 @@ def setup_logging(debug: bool) -> None:
 
 
 async def cmd_restart(update, context) -> None:
-    """/restart — restart the bot process."""
+    """/restart — graceful shutdown, then main() spawns a fresh instance."""
+    global _restart_requested
     from bot_handlers import _auth
     if not _auth(update, context):
         return
     await update.message.reply_text("🔄 Перезапускаю бота…")
-    await asyncio.sleep(0.5)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    _restart_requested = True
+    context.application.stop_running()
 
 
 async def cmd_update(update, context) -> None:
@@ -126,8 +131,9 @@ async def cmd_update(update, context) -> None:
         f"✅ git pull:\n<pre>{output}</pre>\n\n✅ Зависимости установлены\n\n🔄 Перезапускаю…",
         parse_mode="HTML",
     )
-    await asyncio.sleep(0.8)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    global _restart_requested
+    _restart_requested = True
+    context.application.stop_running()
 
 
 async def _post_init(app: Application) -> None:
@@ -149,6 +155,13 @@ async def _post_init(app: Application) -> None:
 
     # Pre-warm stats cache on startup so first /stats is instant
     app.job_queue.run_once(_refresh_stats_cache, when=5, name="stats_warmup")
+
+
+async def _post_shutdown(app: Application) -> None:
+    """Close ngrok + webhook server on bot stop so port 8080 and the ngrok
+    domain are freed before the next instance tries to claim them."""
+    await shutdown_ngrok()
+    stop_webhook_server()
 
 
 def _start_webhook(cfg: ConfigManager, bot_data: dict) -> None:
@@ -186,6 +199,7 @@ def main() -> None:
         ApplicationBuilder()
         .token(token)
         .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
     app.bot_data["config"] = cfg
@@ -248,6 +262,18 @@ def main() -> None:
     # Python 3.10+ requires an explicit event loop before PTB's run_polling
     asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling(drop_pending_updates=True)
+
+    # If /restart or /update triggered a graceful stop, spawn a fresh process.
+    # By this point PTB has fully shut down (polling released, _post_shutdown
+    # closed ngrok + signalled uvicorn), so the child won't collide.
+    if _restart_requested:
+        time.sleep(3.0)  # extra buffer for socket release + ngrok cloud cleanup
+        subprocess.Popen(
+            [sys.executable] + sys.argv,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            close_fds=True,
+        )
+
 
 if __name__ == "__main__":
     main()
