@@ -4,9 +4,10 @@ monobank_service.py — FastAPI webhook server + ngrok tunnel.
 Responsibilities:
   - Expose GET /webhook  (Monobank connectivity check)
   - Expose POST /webhook (incoming transaction events)
-  - Start ngrok tunnel and register webhook URL with Monobank
-  - Push raw transaction data into webhook_queue for the PTB job to consume
-  - Support restart of the webhook server when tokens change
+  - Expose GET /trigger  (quick-trigger saved templates)
+  - Proxy POST /feedback and POST /feedback/voice → feedback-bot on localhost:FEEDBACK_PORT
+  - Own and manage the ngrok tunnel (start, stop, restart)
+  - Register webhook URL with Monobank on startup
 
 Run in a daemon thread via run_webhook_server().
 """
@@ -63,6 +64,7 @@ app = FastAPI(docs_url=None, redoc_url=None)
 # Set at startup so request handlers can filter by account
 _account_id: str = ""
 _mono_token: str = ""
+_feedback_port: int = 8765  # feedback-bot local port
 
 # Track the running server instance and ngrok listener for graceful restart
 _server_instance: Optional[uvicorn.Server] = None
@@ -135,6 +137,40 @@ async def trigger_template(name: str = "", id: str = "") -> Response:
         status_code=200,
         media_type="application/json; charset=utf-8",
     )
+
+
+# ── Feedback proxy → feedback-bot on localhost:_feedback_port ──────────────────
+
+async def _proxy_to_feedback(request: Request, path: str) -> Response:
+    url  = f"http://localhost:{_feedback_port}/{path}"
+    body = await request.body()
+    req  = urllib.request.Request(
+        url,
+        data=body or None,
+        headers={k: v for k, v in request.headers.items()
+                 if k.lower() in ("content-type", "content-length")},
+        method=request.method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return Response(content=r.read(), status_code=r.status,
+                            media_type=r.headers.get("Content-Type", "application/json"))
+    except urllib.error.HTTPError as e:
+        return Response(content=e.read(), status_code=e.code, media_type="application/json")
+    except Exception as exc:
+        logger.error("feedback proxy error: %s", exc)
+        return Response(content=json.dumps({"error": str(exc)}),
+                        status_code=502, media_type="application/json")
+
+
+@app.post("/feedback")
+async def feedback_proxy(request: Request) -> Response:
+    return await _proxy_to_feedback(request, "feedback")
+
+
+@app.post("/feedback/voice")
+async def feedback_voice_proxy(request: Request) -> Response:
+    return await _proxy_to_feedback(request, "feedback/voice")
 
 
 @app.post("/feedback")
@@ -374,11 +410,13 @@ def run_webhook_server(
     mono_token: str,
     account_id: str,
     ngrok_domain: str = "",
+    feedback_port: int = 8765,
 ) -> threading.Thread:
     """Start the webhook server in a daemon thread. Returns the started Thread."""
-    global _account_id, _mono_token
-    _account_id = account_id
-    _mono_token = mono_token
+    global _account_id, _mono_token, _feedback_port
+    _account_id    = account_id
+    _mono_token    = mono_token
+    _feedback_port = feedback_port
 
     t = threading.Thread(
         target=_run_server_thread,
@@ -387,7 +425,7 @@ def run_webhook_server(
         name="webhook-server",
     )
     t.start()
-    logger.info("Webhook server запущен (порт %d)", port)
+    logger.info("Webhook server запущен (порт %d, feedback→%d)", port, feedback_port)
     return t
 
 
@@ -397,8 +435,9 @@ def restart_webhook_server(
     mono_token: str,
     account_id: str,
     ngrok_domain: str = "",
+    feedback_port: int = 8765,
 ) -> threading.Thread:
     """Gracefully stop the current server and start a new one."""
     stop_webhook_server()
     time.sleep(1.5)  # allow the old server to shut down
-    return run_webhook_server(port, ngrok_token, mono_token, account_id, ngrok_domain)
+    return run_webhook_server(port, ngrok_token, mono_token, account_id, ngrok_domain, feedback_port)

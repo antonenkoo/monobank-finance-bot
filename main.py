@@ -162,10 +162,11 @@ def _start_webhook(cfg: ConfigManager, bot_data: dict) -> None:
 
     thread = run_webhook_server(
         port=cfg.get_webhook_port(),
-        ngrok_token=None,
+        ngrok_token=cfg.get("NGROK_AUTH_TOKEN"),
         mono_token=mono_token,
         account_id=cfg.get("MONOBANK_ACCOUNT_ID"),
-        ngrok_domain="",
+        ngrok_domain=cfg.get("NGROK_DOMAIN", ""),
+        feedback_port=int(cfg.get("FEEDBACK_PORT", "8765")),
     )
     bot_data["webhook_started"] = True
     bot_data["webhook_thread"]  = thread
