@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION    = "1.5.1"
+BOT_VERSION    = "1.5.2"
 
 ENV_PATH       = Path(".env")
 TEMPLATES_PATH = Path("templates.json")
@@ -29,6 +29,7 @@ FIELD_LABELS: dict[str, str] = {
     "NOTION_TRANSACTIONS_DB_ID": "Notion Transactions Database ID",
     "NOTION_CATEGORIES_DB_ID":   "Notion Categories Database ID",
     "NGROK_AUTH_TOKEN":          "Ngrok Auth Token",
+    "NGROK_DOMAIN":              "Ngrok Static Domain",
     "WEBHOOK_PORT":              "Webhook Port",
     "NOTION_REMAINING_PROP":     "Notion Column Name With Remaining Amount",
     "NOTION_LIMIT_PROP":         "Notion Column Name With Monthly Limit",
@@ -71,6 +72,11 @@ FIELD_HINTS: dict[str, str] = {
     "NGROK_AUTH_TOKEN": (
         "Auth Token из ngrok — создаёт публичный URL для webhook.\n"
         "Где взять: dashboard.ngrok.com → Your Authtoken."
+    ),
+    "NGROK_DOMAIN": (
+        "Статический домен ngrok — фиксирует URL webhook после перезапуска.\n"
+        "Где взять: dashboard.ngrok.com → Domains → создай бесплатный домен.\n"
+        "Пример: my-bot.ngrok-free.app"
     )
 }
 
@@ -81,6 +87,7 @@ EDITABLE_FIELDS: list[str] = [
     "NOTION_TRANSACTIONS_DB_ID",
     "NOTION_CATEGORIES_DB_ID",
     "NGROK_AUTH_TOKEN",
+    "NGROK_DOMAIN",
     "NOTION_REMAINING_PROP",
     "NOTION_LIMIT_PROP",
     "DEVELOPER_FEEDBACK_URL",
@@ -95,7 +102,7 @@ REQUIRED_FIELDS: list[str] = [
     "NOTION_CATEGORIES_DB_ID",
 ]
 
-RESTART_REQUIRED_FIELDS: set[str] = {"MONOBANK_TOKEN", "NGROK_AUTH_TOKEN"}
+RESTART_REQUIRED_FIELDS: set[str] = {"MONOBANK_TOKEN", "NGROK_AUTH_TOKEN", "NGROK_DOMAIN"}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
