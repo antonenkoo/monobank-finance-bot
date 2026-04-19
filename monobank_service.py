@@ -173,39 +173,6 @@ async def feedback_voice_proxy(request: Request) -> Response:
     return await _proxy_to_feedback(request, "feedback/voice")
 
 
-@app.post("/feedback")
-async def receive_feedback(request: Request) -> Response:
-    """
-    Receive feedback from a remote bot instance.
-    Saves to feedbacks.json and puts into feedback_notification_queue
-    so the PTB job can notify the admin via Telegram.
-    """
-    try:
-        payload = await request.json()
-    except Exception:
-        return Response(status_code=400, content=b"bad json")
-
-    entry = {
-        **payload,
-        "id":     str(uuid.uuid4())[:8],
-        "status": "new",
-    }
-
-    # Persist
-    feedbacks = _load_feedbacks()
-    feedbacks.insert(0, entry)   # newest first
-    _save_feedbacks(feedbacks)
-
-    logger.info(
-        "Feedback saved: %s from @%s  id=%s",
-        entry.get("type"), entry.get("from_username"), entry["id"],
-    )
-    return Response(
-        content=json.dumps({"status": "ok", "id": entry["id"]}, ensure_ascii=False),
-        status_code=200,
-        media_type="application/json; charset=utf-8",
-    )
-
 
 @app.post("/webhook")
 async def webhook_event(request: Request) -> Response:
