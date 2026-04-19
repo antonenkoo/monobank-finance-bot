@@ -343,6 +343,7 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
         mono_token=mono,
         account_id=cfg.get("MONOBANK_ACCOUNT_ID"),
         ngrok_domain=cfg.get("NGROK_DOMAIN", ""),
+        feedback_port=int(cfg.get("FEEDBACK_PORT", "8765")),
     )
     ctx.bot_data["webhook_started"] = True
     ctx.bot_data["webhook_thread"]  = t
