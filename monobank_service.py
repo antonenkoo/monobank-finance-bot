@@ -173,6 +173,11 @@ async def feedback_voice_proxy(request: Request) -> Response:
     return await _proxy_to_feedback(request, "feedback/voice")
 
 
+@app.post("/feedback/photo")
+async def feedback_photo_proxy(request: Request) -> Response:
+    return await _proxy_to_feedback(request, "feedback/photo")
+
+
 
 @app.post("/webhook")
 async def webhook_event(request: Request) -> Response:
