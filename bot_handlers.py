@@ -533,6 +533,16 @@ _CHANGELOG: dict[str, str] = {
         "🕐 <b>Время при ручном добавлении</b>\n"
         "При добавлении транзакции вручную время отображалось в UTC вместо местного — исправлено"
     ),
+    "v1.5.3": (
+        "🚀 <b>v1.5.3 — Скриншоты в фидбеке</b>\n"
+        "───────────────────────\n\n"
+        "📷 <b>Скриншот к фидбеку</b>\n"
+        "Теперь к фидбеку можно прикрепить скриншот. \n\n"
+        "🔄 <b>Новый флоу фидбека</b>\n"
+        "Шаги переупорядочены c учетом нового функционала добавление скриншотов.\n"
+        "💰 <b>Исправлен остаток бюджета</b>\n"
+        "Остаток по категории и общий бюджет после транзакции теперь показывают значения после транзакции."
+    ),
     "v1.5.2": (
         "🚑 <b>v1.5.2 — Hotfix: webhook & /trigger</b>\n"
         "───────────────────────\n\n"
@@ -560,12 +570,13 @@ _CHANGELOG: dict[str, str] = {
 }
 
 _VERSIONS_ORDERED = [
-    "v1.5.2", "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
+    "v1.5.3", "v1.5.2", "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
     "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0",
 ]
 
 _VERSION_KB = _kb(
-    ["v1.5.2", "v1.5.1"],
+    ["v1.5.3", "v1.5.2"],
+    ["v1.5.1"],
     ["v1.5"],
     ["v1.4.4", "v1.4.3"],
     ["v1.4.2", "v1.4.1"],
@@ -2507,8 +2518,11 @@ async def feedback_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /feedback command or 📝 Фидбек button."""
     await update.message.reply_html(
         "📝 <b>Обратная связь</b>\n\n"
-        "Опиши проблему или идею.\n"
-        "Можно отправить текст, 🎤 голосовое или 📷 фото.",
+        "Шаги:\n"
+        "1️⃣ Опиши проблему или идею (текст или 🎤 голосовое)\n"
+        "2️⃣ Прикрепи скриншот (необязательно)\n"
+        "3️⃣ Выбери тип: 🐛 Баг или 🌟 Хотелка\n\n"
+        "<b>Шаг 1 из 3</b> — Напиши описание или отправь голосовое:",
         reply_markup=_FEEDBACK_BACK_KB,
     )
     return FEEDBACK_TEXT
@@ -2525,10 +2539,10 @@ async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     ctx.user_data["feedback_draft"] = t
     await update.message.reply_html(
-        "Выбери тип заявки:",
-        reply_markup=_FEEDBACK_TYPE_KB,
+        "<b>Шаг 2 из 3</b> — Прикрепи скриншот или нажми «Пропустить»:",
+        reply_markup=_FEEDBACK_PHOTO_KB,
     )
-    return FEEDBACK_TYPE
+    return FEEDBACK_PHOTO
 
 
 # Выбор типа фидбека (Баг/Фича) и отправка
@@ -2537,12 +2551,10 @@ async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if t == "◀️ Назад":
         await update.message.reply_html(
-            "📝 <b>Обратная связь</b>\n\n"
-            "Опиши проблему или идею.\n"
-            "Можно отправить текст, 🎤 голосовое или 📷 фото.",
-            reply_markup=_FEEDBACK_BACK_KB,
+            "<b>Шаг 2 из 3</b> — Прикрепи скриншот или нажми «Пропустить»:",
+            reply_markup=_FEEDBACK_PHOTO_KB,
         )
-        return FEEDBACK_TEXT
+        return FEEDBACK_PHOTO
 
     if t not in ("🐛 Баг", "🌟 Хотелка"):
         await update.message.reply_text("Выбери тип:", reply_markup=_FEEDBACK_TYPE_KB)
@@ -2551,16 +2563,8 @@ async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     fb_type = "bug" if t == "🐛 Баг" else "feature"
     ctx.user_data["feedback_type"] = fb_type
 
-    # If user already attached a photo (via feedback_photo_as_text), send immediately
-    if ctx.user_data.get("feedback_photo_bytes"):
-        await _do_send_feedback(update.message, ctx)
-        return ConversationHandler.END
-
-    await update.message.reply_html(
-        "📷 Хочешь прикрепить скриншот?\nОтправь фото или нажми «Пропустить».",
-        reply_markup=_FEEDBACK_PHOTO_KB,
-    )
-    return FEEDBACK_PHOTO
+    await _do_send_feedback(update.message, ctx)
+    return ConversationHandler.END
 
 
 # Транскрипция голосового фидбека
@@ -2612,18 +2616,24 @@ async def feedback_voice_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
                 pass
         await ctx.bot.send_message(
             chat_id,
-            "📝 Опиши проблему или идею.\nМожно отправить текст или 🎤 голосовое сообщение.",
+            "<b>Шаг 1 из 3</b> — Напиши описание или отправь голосовое:",
+            parse_mode="HTML",
             reply_markup=_FEEDBACK_BACK_KB,
         )
         return FEEDBACK_TEXT
 
-    # confirmed — remove inline buttons, ask for type via new message
+    # confirmed — remove inline buttons, proceed to photo step
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await ctx.bot.send_message(chat_id, "Выбери тип заявки:", reply_markup=_FEEDBACK_TYPE_KB)
-    return FEEDBACK_TYPE
+    await ctx.bot.send_message(
+        chat_id,
+        "<b>Шаг 2 из 3</b> — Прикрепи скриншот или нажми «Пропустить»:",
+        parse_mode="HTML",
+        reply_markup=_FEEDBACK_PHOTO_KB,
+    )
+    return FEEDBACK_PHOTO
 
 
 async def _do_send_feedback(update_or_msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2685,9 +2695,9 @@ async def _do_send_feedback(update_or_msg, ctx: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
-# Фото на этапе ввода текста — сохраняем и просим выбрать тип
+# Фото на этапе ввода текста — сохраняем и просим добавить описание
 async def feedback_photo_as_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """User sent a photo at the text stage — save it, store empty draft, ask for type."""
+    """User sent a photo at the text stage — save it, ask for text description."""
     photos = update.message.photo
     if photos:
         tg_file = await ctx.bot.get_file(photos[-1].file_id)
@@ -2695,7 +2705,7 @@ async def feedback_photo_as_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         ctx.user_data["feedback_photo_bytes"] = bytes(photo_bytes)
     ctx.user_data.setdefault("feedback_draft", "")
     await update.message.reply_html(
-        "Выбери тип заявки:",
+        "📷 Скриншот получен.\n\n<b>Шаг 3 из 3</b> — Выбери тип заявки:",
         reply_markup=_FEEDBACK_TYPE_KB,
     )
     return FEEDBACK_TYPE
@@ -2703,19 +2713,21 @@ async def feedback_photo_as_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
 # Обработка фото-скриншота в фидбеке
 async def feedback_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """User sent a photo — download it, then send the full feedback."""
+    """User sent a photo — download and save it, then ask for type."""
     photos = update.message.photo
     if not photos:
         await update.message.reply_text("Пожалуйста, отправь фото или нажми «Пропустить».", reply_markup=_FEEDBACK_PHOTO_KB)
         return FEEDBACK_PHOTO
 
-    # Download the largest available size
     tg_file = await ctx.bot.get_file(photos[-1].file_id)
     photo_bytes = await tg_file.download_as_bytearray()
     ctx.user_data["feedback_photo_bytes"] = bytes(photo_bytes)
 
-    await _do_send_feedback(update.message, ctx)
-    return ConversationHandler.END
+    await update.message.reply_html(
+        "✅ Скриншот получен.\n\n<b>Шаг 3 из 3</b> — Выбери тип заявки:",
+        reply_markup=_FEEDBACK_TYPE_KB,
+    )
+    return FEEDBACK_TYPE
 
 
 # Пропуск прикрепления фото
@@ -2726,8 +2738,11 @@ async def feedback_photo_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Отправь фото или нажми «Пропустить».", reply_markup=_FEEDBACK_PHOTO_KB)
         return FEEDBACK_PHOTO
 
-    await _do_send_feedback(update.message, ctx)
-    return ConversationHandler.END
+    await update.message.reply_html(
+        "<b>Шаг 3 из 3</b> — Выбери тип заявки:",
+        reply_markup=_FEEDBACK_TYPE_KB,
+    )
+    return FEEDBACK_TYPE
 
 
 # Отмена фидбека
