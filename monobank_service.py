@@ -323,12 +323,12 @@ def format_transaction_message(item: dict) -> str:
 
     lines = [
         f"{sign} <b>{description}</b>",
-        f"💰 Сумма: <b>{amount_disp} {currency_str}</b>",
+        f"💰 Сумма: <b><tg-spoiler>{amount_disp} {currency_str}</tg-spoiler></b>",
     ]
     if abs(op_amount) != abs(amount_uah):
-        lines.append(f"   (операция: {abs(op_amount):.2f})")
+        lines.append(f"   (операция: <tg-spoiler>{abs(op_amount):.2f}</tg-spoiler>)")
     lines += [
-        f"🏦 Остаток: {balance_disp} UAH",
+        f"🏦 Остаток: <tg-spoiler>{balance_disp} UAH</tg-spoiler>",
         f"🏷 Категория: {mcc_label}",
         f"🕐 Время: {dt_str}",
     ]
