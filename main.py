@@ -81,7 +81,6 @@ async def cmd_restart(update, context) -> None:
 
 
 async def cmd_update(update, context) -> None:
-    """/update — git pull + restart."""
     from bot_handlers import _auth
     if not _auth(update, context):
         return
@@ -89,12 +88,18 @@ async def cmd_update(update, context) -> None:
     msg = await update.message.reply_text("⏳ Выполняю git pull…")
     project_dir = os.path.dirname(os.path.abspath(__file__))
 
+    await asyncio.to_thread(
+        lambda: subprocess.run(
+            ["git", "config", "--global", "--add",
+             "safe.directory", project_dir],
+            cwd=project_dir, capture_output=True, text=True,
+        )
+    )
+
     result = await asyncio.to_thread(
         lambda: subprocess.run(
             ["git", "pull"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
+            cwd=project_dir, capture_output=True, text=True,
         )
     )
 
