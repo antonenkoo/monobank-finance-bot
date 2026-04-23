@@ -354,7 +354,7 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # Форматировать сумму для отображения (перевернуть знак для юзера)
 def _disp(amount: float) -> str:
     """expense (neg internally) → shown as positive; income (pos internally) → shown as negative."""
-    return f"{-amount:,.2f} ₴"
+    return f"<tg-spoiler>{-amount:,.2f} ₴</tg-spoiler>"
 
 # Сумма + тип (Расход/Доход)
 def _disp_with_type(amount: float) -> str:
@@ -2395,7 +2395,7 @@ async def _build_stats_text(notion: "NotionService") -> str:
         "",
         f"📅 {day_info}",
         f"💸 <b>Расходы:</b> {total_exp:,.2f} ₴",
-        f"💰 <b>Доходы:</b> {total_inc:,.2f} ₴",
+        f"💰 <b>Доходы:</b> <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>",
     ]
     if budget_block:
         parts.append(budget_block)
@@ -3316,8 +3316,8 @@ async def handle_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     caption  = (
         f"📊 <b>Отчёт за {month_name} {rep_year}</b>\n\n"
         f"💸 Расходы: {total_exp:,.2f} ₴\n"
-        f"💰 Доходы:  {total_inc:,.2f} ₴\n"
-        f"💼 Баланс:  {total_inc - total_exp:+,.2f} ₴"
+        f"💰 Доходы:  <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>\n"
+        f"💼 Баланс:  <tg-spoiler>{total_inc - total_exp:+,.2f} ₴</tg-spoiler>"
     )
     await query.message.reply_document(
         document=_io.BytesIO(pdf_bytes),
@@ -3399,8 +3399,8 @@ async def send_monthly_report(ctx: ContextTypes.DEFAULT_TYPE) -> None:
             text=(
                 f"📊 <b>Итоги {prev_month_name} {prev_year}</b>\n\n"
                 f"💸 Расходы: {total_exp:,.2f} ₴\n"
-                f"💰 Доходы:  {total_inc:,.2f} ₴\n"
-                f"💼 Баланс:  {total_inc - total_exp:+,.2f} ₴\n\n"
+                f"💰 Доходы:  <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>\n"
+                f"💼 Баланс:  <tg-spoiler>{total_inc - total_exp:+,.2f} ₴</tg-spoiler>\n\n"
                 "<i>(PDF не сгенерирован — проверь установку matplotlib)</i>"
             ),
             parse_mode=ParseMode.HTML,
@@ -3412,8 +3412,8 @@ async def send_monthly_report(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     caption  = (
         f"📊 <b>Отчёт за {prev_month_name} {prev_year}</b>\n\n"
         f"💸 Расходы: {total_exp:,.2f} ₴\n"
-        f"💰 Доходы:  {total_inc:,.2f} ₴\n"
-        f"💼 Баланс:  {total_inc - total_exp:+,.2f} ₴"
+        f"💰 Доходы:  <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>\n"
+        f"💼 Баланс:  <tg-spoiler>{total_inc - total_exp:+,.2f} ₴</tg-spoiler>"
     )
     await ctx.bot.send_document(
         chat_id=chat_id,
