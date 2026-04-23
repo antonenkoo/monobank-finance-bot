@@ -36,7 +36,8 @@ webhook_queue: queue.Queue = queue.Queue()  # Monobank StatementItem dicts
 trigger_queue: queue.Queue = queue.Queue()  # template dicts from /trigger endpoint
 
 # ── Feedback storage ───────────────────────────────────────────────────────────
-FEEDBACKS_FILE = Path("feedbacks.json")
+from config_manager import USER_DATA_DIR
+FEEDBACKS_FILE = USER_DATA_DIR / "feedbacks.json"
 
 
 def _load_feedbacks() -> list[dict]:

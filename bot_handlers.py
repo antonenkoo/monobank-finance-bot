@@ -35,6 +35,7 @@ from config_manager import (
     FIELD_HINTS,
     FIELD_LABELS,
     RESTART_REQUIRED_FIELDS,
+    USER_DATA_DIR,
     ConfigManager,
     TemplateManager,
 )
@@ -96,7 +97,7 @@ _STARTUP_MESSAGES = [
 
 
 
-_RELEASE_SHOWN_FILE = Path("release_shown.txt")
+_RELEASE_SHOWN_FILE = USER_DATA_DIR / "release_shown.txt"
 
 
 # Получить последнюю показанную версию из файла

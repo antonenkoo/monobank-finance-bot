@@ -12,9 +12,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from config_manager import USER_DATA_DIR
+
 logger = logging.getLogger(__name__)
 
-PENDING_PATH = Path("pending_transactions.json")
+PENDING_PATH = USER_DATA_DIR / "pending_transactions.json"
 
 
 class PendingTransactionStore:

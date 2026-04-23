@@ -15,7 +15,9 @@ import json
 import logging
 from pathlib import Path
 
-LIMIT_STORE_PATH = Path("limit_notifications.json")
+from config_manager import USER_DATA_DIR
+
+LIMIT_STORE_PATH = USER_DATA_DIR / "limit_notifications.json"
 logger = logging.getLogger(__name__)
 
 

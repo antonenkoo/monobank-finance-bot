@@ -10,9 +10,11 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from config_manager import USER_DATA_DIR
+
 logger = logging.getLogger(__name__)
 
-SMART_CATS_PATH = Path("smart_categories.json")
+SMART_CATS_PATH = USER_DATA_DIR / "smart_categories.json"
 
 
 class SmartCategoryStore:

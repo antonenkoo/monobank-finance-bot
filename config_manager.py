@@ -13,9 +13,13 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION    = "1.5.3"
+BOT_VERSION = "1.5.3"
 
-ENV_PATH       = Path(".env")
+# All runtime-written user data lives here so git reset --hard never touches it.
+USER_DATA_DIR = Path(__file__).parent / "user_data"
+USER_DATA_DIR.mkdir(exist_ok=True)
+
+ENV_PATH       = USER_DATA_DIR / ".env"
 TEMPLATES_PATH = Path("templates.json")
 
 # ── Field metadata ─────────────────────────────────────────────────────────────
