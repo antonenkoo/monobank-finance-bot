@@ -36,7 +36,8 @@ webhook_queue: queue.Queue = queue.Queue()  # Monobank StatementItem dicts
 trigger_queue: queue.Queue = queue.Queue()  # template dicts from /trigger endpoint
 
 # ── Feedback storage ───────────────────────────────────────────────────────────
-FEEDBACKS_FILE = Path("feedbacks.json")
+from config_manager import USER_DATA_DIR
+FEEDBACKS_FILE = USER_DATA_DIR / "feedbacks.json"
 
 
 def _load_feedbacks() -> list[dict]:
@@ -323,12 +324,12 @@ def format_transaction_message(item: dict) -> str:
 
     lines = [
         f"{sign} <b>{description}</b>",
-        f"💰 Сумма: <b><tg-spoiler>{amount_disp} {currency_str}</tg-spoiler></b>",
+        f"💰 Сумма: <b>{amount_disp} {currency_str}</b>",
     ]
     if abs(op_amount) != abs(amount_uah):
-        lines.append(f"   (операция: <tg-spoiler>{abs(op_amount):.2f}</tg-spoiler>)")
+        lines.append(f"   (операция: {abs(op_amount):.2f})")
     lines += [
-        f"🏦 Остаток: <tg-spoiler>{balance_disp} UAH</tg-spoiler>",
+        f"🏦 Остаток: {balance_disp} UAH",
         f"🏷 Категория: {mcc_label}",
         f"🕐 Время: {dt_str}",
     ]

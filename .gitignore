@@ -1,4 +1,8 @@
-# Secrets — NEVER commit these
+# User data directory — all runtime files, secrets, and personal data live here.
+# git reset --hard will never touch these.
+user_data/
+
+# Legacy root-level files (migrated to user_data/ on first run)
 .env
 
 # Personal data

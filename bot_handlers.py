@@ -35,6 +35,7 @@ from config_manager import (
     FIELD_HINTS,
     FIELD_LABELS,
     RESTART_REQUIRED_FIELDS,
+    USER_DATA_DIR,
     ConfigManager,
     TemplateManager,
 )
@@ -96,7 +97,7 @@ _STARTUP_MESSAGES = [
 
 
 
-_RELEASE_SHOWN_FILE = Path("release_shown.txt")
+_RELEASE_SHOWN_FILE = USER_DATA_DIR / "release_shown.txt"
 
 
 # Получить последнюю показанную версию из файла
@@ -354,13 +355,19 @@ def _try_restart_webhook(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # Форматировать сумму для отображения (перевернуть знак для юзера)
 def _disp(amount: float) -> str:
     """expense (neg internally) → shown as positive; income (pos internally) → shown as negative."""
-    return f"<tg-spoiler>{-amount:,.2f} ₴</tg-spoiler>"
+    return f"{-amount:,.2f} ₴"
 
 # Сумма + тип (Расход/Доход)
 def _disp_with_type(amount: float) -> str:
-    t = "расход" if amount < 0 else "доход"
-    return f"{_disp(amount)} ({t})"
-
+    # Предварительно форматируем число (например, "1 000.00")
+    formatted_value = _disp(amount)
+    
+    if amount >= 0:
+        # Вариант А: Полная строка для дохода (со спойлером)
+        return f"<tg-spoiler>{formatted_value}</tg-spoiler> (доход)"
+    else:
+        # Вариант Б: Полная строка для расхода (обычный текст)
+        return f"{formatted_value} (расход)"
 
 # ── Main menu text ─────────────────────────────────────────────────────────────
 

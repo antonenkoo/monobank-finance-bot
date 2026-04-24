@@ -2,9 +2,16 @@
 main.py — Entry point for Monobank Finance Bot.
 """
 
-# load_dotenv before all other imports — bot_handlers reads os.getenv() at module level
+# load_dotenv before all other imports — bot_handlers reads os.getenv() at module level.
+# .env lives in user_data/ so git reset --hard never clobbers it.
+import shutil
+from pathlib import Path as _Path
+
+_USER_DATA_DIR = _Path(__file__).parent / "user_data"
+_USER_DATA_DIR.mkdir(exist_ok=True)
+
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(_USER_DATA_DIR / ".env")
 
 import asyncio
 import logging
@@ -40,6 +47,25 @@ from monobank_service import run_webhook_server, shutdown_ngrok, stop_webhook_se
 
 
 _restart_requested = False
+
+_MIGRATE_FILES = [
+    ".env",
+    "feedbacks.json",
+    "pending_transactions.json",
+    "smart_categories.json",
+    "limit_notifications.json",
+    "release_shown.txt",
+]
+
+def _migrate_user_data() -> None:
+    """One-time migration: move legacy root-level data files into user_data/."""
+    root = _Path(__file__).parent
+    for name in _MIGRATE_FILES:
+        src = root / name
+        dst = _USER_DATA_DIR / name
+        if src.exists() and not dst.exists():
+            shutil.move(str(src), str(dst))
+            print(f"[migration] Moved {name} → user_data/{name}")
 
 
 def setup_logging(debug: bool) -> None:
@@ -81,7 +107,6 @@ async def cmd_restart(update, context) -> None:
 
 
 async def cmd_update(update, context) -> None:
-    """/update — git pull + restart."""
     from bot_handlers import _auth
     if not _auth(update, context):
         return
@@ -89,12 +114,18 @@ async def cmd_update(update, context) -> None:
     msg = await update.message.reply_text("⏳ Выполняю git pull…")
     project_dir = os.path.dirname(os.path.abspath(__file__))
 
+    await asyncio.to_thread(
+        lambda: subprocess.run(
+            ["git", "config", "--global", "--add",
+             "safe.directory", project_dir],
+            cwd=project_dir, capture_output=True, text=True,
+        )
+    )
+
     result = await asyncio.to_thread(
         lambda: subprocess.run(
             ["git", "pull"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
+            cwd=project_dir, capture_output=True, text=True,
         )
     )
 
@@ -186,6 +217,7 @@ def _start_webhook(cfg: ConfigManager, bot_data: dict) -> None:
 
 
 def main() -> None:
+    _migrate_user_data()
     cfg = ConfigManager()
     setup_logging(False)
     logger = logging.getLogger(__name__)
