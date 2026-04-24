@@ -142,9 +142,20 @@ async def cmd_update(update, context) -> None:
         parse_mode="HTML",
     )
 
+    _pip_candidates = [
+        os.path.join(project_dir, "venv", "Scripts", "pip.exe"),
+        os.path.join(project_dir, "venv", "bin", "pip"),
+    ]
+    _pip_exe = next((c for c in _pip_candidates if os.path.exists(c)), None)
+    _pip_cmd = (
+        [_pip_exe, "install", "-r", "requirements.txt", "--quiet", "--no-warn-script-location"]
+        if _pip_exe
+        else [sys.executable, "-m", "pip", "install", "-r", "requirements.txt",
+              "--quiet", "--no-warn-script-location"]
+    )
     pip_result = await asyncio.to_thread(
         lambda: subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--quiet"],
+            _pip_cmd,
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -167,6 +178,25 @@ async def cmd_update(update, context) -> None:
     context.application.stop_running()
 
 
+async def _init_min_year(ctx) -> None:
+    """Fetch oldest Notion record year → store in bot_data['min_year']."""
+    from notion_service import NotionService
+    cfg     = ctx.bot_data["config"]
+    api_key = cfg.get("NOTION_API_KEY")
+    txn_db  = cfg.get("NOTION_TRANSACTIONS_DB_ID")
+    cat_db  = cfg.get("NOTION_CATEGORIES_DB_ID")
+    if not (api_key and txn_db and cat_db):
+        return
+    try:
+        ns = NotionService(api_key, txn_db, cat_db)
+        yr = await asyncio.to_thread(ns.get_oldest_transaction_year)
+        if yr:
+            ctx.bot_data["min_year"] = yr
+            logging.getLogger(__name__).info("min_year set to %d", yr)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not fetch min_year: %s", exc)
+
+
 async def _post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start",           "Главное меню"),
@@ -186,6 +216,8 @@ async def _post_init(app: Application) -> None:
 
     # Pre-warm stats cache on startup so first /stats is instant
     app.job_queue.run_once(_refresh_stats_cache, when=5, name="stats_warmup")
+    # Fetch oldest transaction year for /report year range picker
+    app.job_queue.run_once(_init_min_year, when=8, name="init_min_year")
 
 
 async def _post_shutdown(app: Application) -> None:

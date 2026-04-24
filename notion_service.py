@@ -430,6 +430,29 @@ class NotionService:
         logger.info("get_categories_full: loaded %d categories", len(results))
         return results
 
+    def get_oldest_transaction_year(self) -> Optional[int]:
+        """Return the year of the oldest transaction in the DB, or None if empty."""
+        body = {
+            "page_size": 1,
+            "sorts": [{"property": PROP_DATE, "direction": "ascending"}],
+            "filter": {"property": PROP_DATE, "date": {"is_not_empty": True}},
+        }
+        result = self._request("POST", f"/databases/{self.transactions_db_id}/query", body)
+        if not result:
+            return None
+        pages = result.get("results", [])
+        if not pages:
+            return None
+        date_str = (
+            (pages[0].get("properties", {}).get(PROP_DATE) or {}).get("date") or {}
+        ).get("start")
+        if not date_str:
+            return None
+        try:
+            return int(date_str[:4])
+        except (ValueError, TypeError):
+            return None
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod

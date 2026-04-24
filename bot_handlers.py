@@ -2878,6 +2878,80 @@ def _enrich_txns(txns: list[dict], cats_full: list[dict]) -> list[dict]:
     return enriched
 
 
+def _compute_insights(
+    txns: list[dict],
+    by_cat: dict[str, float],
+    total_exp: float,
+    prev_by_cat: "dict[str, float] | None" = None,
+) -> dict:
+    """Compute analytics: top-5, peak day, top-10, anomalies, recommendations."""
+    import statistics as _stats
+    from collections import defaultdict as _dd
+
+    top5_raw = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
+    top5 = []
+    for cname, spent in top5_raw:
+        pct      = spent / total_exp * 100 if total_exp else 0
+        prev_amt = (prev_by_cat or {}).get(cname, 0.0)
+        top5.append({"name": cname, "amount": spent, "pct": pct,
+                     "prev": prev_amt, "delta": spent - prev_amt})
+
+    expenses: list[dict] = [t for t in txns if (t.get("amount") or 0) > 0]
+
+    daily: dict = _dd(float)
+    for t in expenses:
+        ds = (t.get("date") or "")[:10]
+        if ds:
+            daily[ds] += t.get("amount", 0)
+    peak_day = max(daily.items(), key=lambda x: x[1]) if daily else ("—", 0.0)
+
+    top10 = sorted(expenses, key=lambda t: t.get("amount", 0), reverse=True)[:10]
+
+    amounts = [t.get("amount", 0) for t in expenses if t.get("amount")]
+    anomalies: list[dict] = []
+    if len(amounts) >= 4:
+        mean      = _stats.mean(amounts)
+        std       = _stats.stdev(amounts)
+        threshold = mean + 2 * std
+        anomalies = sorted(
+            [t for t in expenses if t.get("amount", 0) > threshold],
+            key=lambda t: t.get("amount", 0), reverse=True,
+        )[:5]
+
+    recs: list[str] = []
+    if top5:
+        biggest = top5[0]
+        if biggest["pct"] > 40:
+            recs.append(
+                f"Категория «{biggest['name']}» занимает {biggest['pct']:.0f}% расходов — "
+                "рассмотри возможность снижения."
+            )
+        if prev_by_cat:
+            for item in top5[:3]:
+                if item["prev"] > 0 and item["delta"] > item["prev"] * 0.25:
+                    recs.append(
+                        f"«{item['name']}» выросли на {item['delta']:,.0f} ₴ "
+                        f"({item['delta'] / item['prev'] * 100:+.0f}%) vs прошлый период."
+                    )
+                    if len(recs) >= 3:
+                        break
+    if anomalies and len(recs) < 3:
+        recs.append(
+            f"{len(anomalies)} транзакц. значительно выше среднего — "
+            "проверь необычные расходы."
+        )
+    if not recs:
+        recs.append("Расходы в норме — значительных отклонений нет.")
+
+    return {
+        "top5":            top5,
+        "peak_day":        peak_day,
+        "top10":           top10,
+        "anomalies":       anomalies,
+        "recommendations": recs[:3],
+    }
+
+
 def _generate_monthly_pdf(
     month_name: str,
     year: int,
@@ -2886,6 +2960,7 @@ def _generate_monthly_pdf(
     total_exp: float,
     total_inc: float,
     txns: list[dict],           # enriched: each has 'name', 'amount', 'category', 'date'
+    prev_by_cat: "dict[str, float] | None" = None,
 ) -> bytes:
     """Generate a multi-page PDF report with charts and full transaction list."""
     import io
@@ -3101,7 +3176,126 @@ def _generate_monthly_pdf(
         pdf.savefig(fig3, bbox_inches="tight")
         plt.close(fig3)
 
-        # ── PAGE 4+: Transaction list grouped by day ──────────────────────────
+        # ── PAGE 4: Analytics insights ───────────────────────────────────────
+        insights = _compute_insights(txns, by_cat, total_exp, prev_by_cat)
+
+        fig_a = plt.figure(figsize=(14, 10))
+        fig_a.patch.set_facecolor("#f8f9fc")
+        ax_a = fig_a.add_axes([0.01, 0.01, 0.98, 0.97])
+        ax_a.axis("off")
+        ax_a.set_xlim(0, 1)
+        ax_a.set_ylim(0, 1)
+
+        ax_a.text(0.5, 0.975, f"Аналитика  —  {month_name.capitalize()} {year}",
+                  ha="center", va="top", fontsize=13, fontweight="bold", color="#1a2040")
+
+        ya = 0.93
+
+        # Top-5 categories
+        ax_a.text(0.01, ya, "Топ-5 категорий", fontsize=10, fontweight="bold",
+                  color="#333", va="top")
+        ya -= 0.028
+        for xpos, lbl, ha_ in [
+            (0.06, "Категория", "left"), (0.52, "Сумма", "right"),
+            (0.62, "%", "left"),         (0.72, "vs пред.", "left"),
+        ]:
+            ax_a.text(xpos, ya, lbl, fontsize=7, color="#999", va="top", ha=ha_,
+                      fontweight="bold")
+        ax_a.axhline(ya - 0.007, color="#ccc", linewidth=0.6, xmin=0.01, xmax=0.99)
+        ya -= 0.022
+        for i, item in enumerate(insights["top5"]):
+            clr = PALETTE[i % len(PALETTE)]
+            ax_a.add_patch(mpatches.Rectangle(
+                (0.01, ya - 0.005), 0.005, 0.018, facecolor=clr, edgecolor="none",
+            ))
+            ax_a.text(0.020, ya, f"{i+1}", fontsize=8, color="#888", va="top")
+            ax_a.text(0.060, ya, item["name"][:32], fontsize=8.5, color="#222", va="top")
+            ax_a.text(0.52,  ya, f"{item['amount']:,.0f} ₴",
+                      fontsize=8.5, color="#c0392b", va="top", ha="right",
+                      fontfamily="monospace")
+            ax_a.text(0.62,  ya, f"{item['pct']:.1f}%", fontsize=8.5, color="#555", va="top")
+            if prev_by_cat is not None:
+                if item["prev"] > 0:
+                    arrow  = "↑" if item["delta"] > 0 else "↓"
+                    dcolor = "#e74c3c" if item["delta"] > 0 else "#27ae60"
+                    ax_a.text(0.72, ya, f"{arrow} {abs(item['delta']):,.0f} ₴",
+                              fontsize=8, color=dcolor, va="top")
+                else:
+                    ax_a.text(0.72, ya, "новая", fontsize=8, color="#aaa", va="top")
+            ax_a.axhline(ya - 0.013, color="#f0f0f0", linewidth=0.3, xmin=0.01, xmax=0.99)
+            ya -= 0.030
+        ya -= 0.010
+
+        # Peak spending day
+        peak_ds, peak_amt = insights["peak_day"]
+        if peak_ds != "—":
+            try:
+                from datetime import date as _ddate
+                _pd = _ddate.fromisoformat(peak_ds)
+                peak_label = f"{_pd.day} {_MONTHS_RU[_pd.month - 1]}: {peak_amt:,.0f} ₴"
+            except Exception:
+                peak_label = f"{peak_ds}: {peak_amt:,.0f} ₴"
+            ax_a.text(0.01, ya, f"Пиковый день расходов:  {peak_label}",
+                      fontsize=9, color="#555", va="top")
+            ya -= 0.028
+
+        # Top-10 expense transactions
+        ax_a.text(0.01, ya, "Крупнейшие транзакции", fontsize=10, fontweight="bold",
+                  color="#333", va="top")
+        ya -= 0.025
+        for j, t in enumerate(insights["top10"]):
+            if ya < 0.22:
+                break
+            tname    = (t.get("name") or "—")[:38]
+            tamt     = t.get("amount", 0)
+            tcat     = (t.get("category") or "—")[:20]
+            tds      = (t.get("date") or "")[:10]
+            try:
+                from datetime import date as _ddate2
+                _td = _ddate2.fromisoformat(tds)
+                date_lbl = f"{_td.day} {_MONTHS_RU[_td.month - 1]}"
+            except Exception:
+                date_lbl = tds
+            ax_a.text(0.01, ya, f"{j+1:2d}. {tname}", fontsize=7.5, color="#333", va="top")
+            ax_a.text(0.62, ya, tcat, fontsize=7.5, color="#777", va="top")
+            ax_a.text(0.82, ya, date_lbl, fontsize=7.5, color="#888", va="top")
+            ax_a.text(0.99, ya, f"{tamt:,.0f} ₴", fontsize=7.5, color="#c0392b",
+                      va="top", ha="right", fontfamily="monospace")
+            ax_a.axhline(ya - 0.010, color="#f5f5f5", linewidth=0.3, xmin=0.01, xmax=0.99)
+            ya -= 0.023
+        ya -= 0.010
+
+        # Anomalies
+        if insights["anomalies"] and ya > 0.10:
+            ax_a.text(0.01, ya, "Аномальные расходы  (>2σ)", fontsize=10,
+                      fontweight="bold", color="#e67e22", va="top")
+            ya -= 0.022
+            for t in insights["anomalies"]:
+                if ya < 0.06:
+                    break
+                ax_a.text(0.02, ya, f"• {(t.get('name') or '—')[:45]}",
+                          fontsize=8, color="#555", va="top")
+                ax_a.text(0.99, ya, f"{t.get('amount', 0):,.0f} ₴",
+                          fontsize=8, color="#e74c3c", va="top", ha="right",
+                          fontfamily="monospace")
+                ya -= 0.022
+            ya -= 0.008
+
+        # Recommendations
+        if ya > 0.04:
+            ax_a.text(0.01, ya, "Рекомендации", fontsize=10, fontweight="bold",
+                      color="#2980b9", va="top")
+            ya -= 0.022
+            for rec in insights["recommendations"]:
+                if ya < 0.02:
+                    break
+                ax_a.text(0.02, ya, f"• {rec[:90]}", fontsize=8, color="#333", va="top")
+                ya -= 0.022
+
+        pdf.savefig(fig_a, bbox_inches="tight")
+        plt.close(fig_a)
+
+        # ── PAGE 5+: Transaction list grouped by day ──────────────────────────
         # Only expenses, sorted by date
         expense_txns = sorted(
             [t for t in txns if (t.get("amount") or 0) > 0],
@@ -3209,8 +3403,203 @@ def _generate_monthly_pdf(
     return buf.read()
 
 
+def _generate_yearly_pdf(
+    year:           int,
+    months_exp:     list,   # 12 floats [jan … dec]
+    months_inc:     list,   # 12 floats [jan … dec]
+    overall_by_cat: dict,   # category name → total spent for the year
+    total_exp:      float,
+    total_inc:      float,
+) -> bytes:
+    """Generate a 3-page yearly PDF: summary+pie, 12-month trend chart, monthly table."""
+    import io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import matplotlib.backends.backend_pdf as pdf_backend
+
+    plt.rcParams["font.family"] = "DejaVu Sans"
+
+    PALETTE_Y = [
+        "#4e9af1", "#f1914e", "#4ec27d", "#f14e6e", "#a04ef1",
+        "#f1d44e", "#4ecdf1", "#f1724e", "#7df14e", "#f14eb0",
+        "#6e9ef1", "#f1b04e",
+    ]
+    MONTHS_SHORT = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн",
+                    "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+
+    buf = io.BytesIO()
+    with pdf_backend.PdfPages(buf) as pdf:
+
+        # ── PAGE 1: Year summary + category pie ─────────────────────────────
+        fig = plt.figure(figsize=(13, 9))
+        fig.patch.set_facecolor("#f8f9fc")
+        fig.text(0.5, 0.96, f"Годовой финансовый отчёт  —  {year}",
+                 ha="center", fontsize=19, fontweight="bold", color="#1a2040")
+        balance_total = total_inc - total_exp
+        fig.text(0.5, 0.925,
+                 f"Расходы: {total_exp:,.0f} ₴   |   Доходы: {total_inc:,.0f} ₴   "
+                 f"|   Баланс: {balance_total:+,.0f} ₴",
+                 ha="center", fontsize=10, color="#555")
+
+        ax_pie = fig.add_axes([0.02, 0.08, 0.46, 0.80])
+        cat_sorted = sorted(overall_by_cat.items(), key=lambda x: x[1], reverse=True)
+        if cat_sorted:
+            labels = [c for c, _ in cat_sorted]
+            values = [v for _, v in cat_sorted]
+            colors = [PALETTE_Y[i % len(PALETTE_Y)] for i in range(len(labels))]
+            wedges, _, autotexts = ax_pie.pie(
+                values, labels=None,
+                autopct=lambda p: f"{p:.1f}%" if p >= 3 else "",
+                startangle=140, colors=colors,
+                wedgeprops=dict(edgecolor="white", linewidth=1.8),
+                pctdistance=0.72,
+            )
+            for at in autotexts:
+                at.set_fontsize(7.5)
+            ax_pie.legend(
+                wedges,
+                [f"{l}  ({v:,.0f} ₴)" for l, v in zip(labels, values)],
+                loc="lower center", bbox_to_anchor=(0.5, -0.13),
+                fontsize=7.5, ncol=2, frameon=False,
+            )
+            ax_pie.set_title("Расходы по категориям за год", fontsize=11, pad=8, color="#333")
+        else:
+            ax_pie.text(0.5, 0.5, "Нет данных", ha="center", va="center")
+            ax_pie.axis("off")
+
+        ax_tbl = fig.add_axes([0.52, 0.08, 0.46, 0.80])
+        ax_tbl.axis("off")
+        ax_tbl.set_xlim(0, 1)
+        ax_tbl.set_ylim(0, 1)
+        bal_clr = "#27ae60" if balance_total >= 0 else "#c0392b"
+        for y_pos, lbl, val, clr in [
+            (0.92, "Расходы", f"{total_exp:>12,.2f} ₴",        "#c0392b"),
+            (0.84, "Доходы",  f"{total_inc:>12,.2f} ₴",        "#27ae60"),
+            (0.76, "Баланс",  f"{balance_total:>+12,.2f} ₴",   bal_clr),
+        ]:
+            ax_tbl.text(0.04, y_pos, lbl,  fontsize=11, color="#444", va="top")
+            ax_tbl.text(0.96, y_pos, val,  fontsize=11, color=clr, va="top",
+                        ha="right", fontfamily="monospace", fontweight="bold")
+        ax_tbl.axhline(0.73, color="#ccd", linewidth=0.8, xmin=0.02, xmax=0.98)
+        ax_tbl.text(0.04, 0.69, "Категория", fontsize=8, color="#777", va="top",
+                    fontweight="bold")
+        ax_tbl.text(0.96, 0.69, "Сумма  / %", fontsize=8, color="#777", va="top",
+                    ha="right", fontweight="bold")
+        ax_tbl.axhline(0.66, color="#eee", linewidth=0.5, xmin=0.02, xmax=0.98)
+        yc = 0.63
+        for i, (cname, spent) in enumerate(cat_sorted):
+            if yc < 0.02:
+                break
+            pct  = spent / total_exp * 100 if total_exp else 0
+            clr  = PALETTE_Y[i % len(PALETTE_Y)]
+            ax_tbl.add_patch(mpatches.Rectangle(
+                (0.02, yc - 0.01), 0.008, 0.030, facecolor=clr, edgecolor="none",
+            ))
+            ax_tbl.text(0.05, yc, cname[:26], fontsize=8, color="#333", va="center")
+            ax_tbl.text(0.96, yc, f"{spent:>9,.0f} ₴  {pct:4.1f}%",
+                        fontsize=8, color="#333", va="center", ha="right",
+                        fontfamily="monospace")
+            ax_tbl.axhline(yc - 0.018, color="#f0f0f0", linewidth=0.4,
+                           xmin=0.02, xmax=0.98)
+            yc -= 0.038
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        # ── PAGE 2: 12-month trend bar chart ────────────────────────────────
+        fig2, ax2 = plt.subplots(figsize=(14, 7))
+        fig2.patch.set_facecolor("#f8f9fc")
+        x      = list(range(1, 13))
+        bar_w  = 0.38
+        ax2.bar([i - bar_w / 2 for i in x], months_exp, width=bar_w,
+                color="#e74c3c", alpha=0.82, label="Расходы")
+        ax2.bar([i + bar_w / 2 for i in x], months_inc, width=bar_w,
+                color="#27ae60", alpha=0.82, label="Доходы")
+        balance_vals = [inc - exp for exp, inc in zip(months_exp, months_inc)]
+        ax2_r = ax2.twinx()
+        ax2_r.plot(x, balance_vals, color="#3498db", linewidth=2,
+                   marker="o", markersize=5, label="Баланс")
+        ax2_r.axhline(0, color="#aaa", linewidth=0.8, linestyle="--")
+        ax2_r.set_ylabel("Баланс, ₴", fontsize=9, color="#3498db")
+        ax2_r.tick_params(axis="y", labelcolor="#3498db", labelsize=8)
+        ax2_r.spines["top"].set_visible(False)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(MONTHS_SHORT, fontsize=9)
+        ax2.set_ylabel("Сумма, ₴", fontsize=10)
+        ax2.set_xlim(0.5, 12.5)
+        ax2.set_title(f"Расходы и доходы по месяцам  —  {year}",
+                      fontsize=13, fontweight="bold", pad=12, color="#1a2040")
+        ax2.legend(loc="upper left", fontsize=9)
+        ax2_r.legend(loc="upper right", fontsize=9)
+        ax2.spines["top"].set_visible(False)
+        ax2.spines["right"].set_visible(False)
+        plt.tight_layout()
+        pdf.savefig(fig2, bbox_inches="tight")
+        plt.close(fig2)
+
+        # ── PAGE 3: Month-by-month breakdown table ───────────────────────────
+        fig3 = plt.figure(figsize=(14, 9))
+        fig3.patch.set_facecolor("#f8f9fc")
+        ax3 = fig3.add_axes([0.01, 0.01, 0.98, 0.97])
+        ax3.axis("off")
+        ax3.set_xlim(0, 1)
+        ax3.set_ylim(0, 1)
+        ax3.text(0.5, 0.975, f"Помесячная сводка  —  {year}",
+                 ha="center", va="top", fontsize=13, fontweight="bold", color="#1a2040")
+        yh = 0.935
+        for xpos, lbl, ha_ in [
+            (0.01, "Месяц",    "left"),
+            (0.35, "Расходы",  "right"),
+            (0.57, "Доходы",   "right"),
+            (0.79, "Баланс",   "right"),
+        ]:
+            ax3.text(xpos, yh, lbl, fontsize=9, fontweight="bold", color="#666",
+                     va="top", ha=ha_)
+        ax3.axhline(yh - 0.010, color="#aaa", linewidth=0.8, xmin=0.01, xmax=0.99)
+        yh -= 0.032
+        for mi, (exp, inc) in enumerate(zip(months_exp, months_inc)):
+            bal     = inc - exp
+            bg      = "#f0f4fb" if mi % 2 == 0 else "#fafafa"
+            bc      = "#27ae60" if bal >= 0 else "#c0392b"
+            ax3.add_patch(mpatches.FancyBboxPatch(
+                (0.005, yh - 0.013), 0.99, 0.028,
+                boxstyle="square,pad=0", facecolor=bg, edgecolor="none",
+            ))
+            ax3.text(0.01, yh, _MONTHS_RU[mi].capitalize(),
+                     fontsize=9, color="#222", va="top")
+            ax3.text(0.35, yh, f"{exp:,.0f} ₴",
+                     fontsize=9, color="#c0392b", va="top", ha="right",
+                     fontfamily="monospace")
+            ax3.text(0.57, yh, f"{inc:,.0f} ₴",
+                     fontsize=9, color="#27ae60", va="top", ha="right",
+                     fontfamily="monospace")
+            ax3.text(0.79, yh, f"{bal:+,.0f} ₴",
+                     fontsize=9, color=bc, va="top", ha="right",
+                     fontfamily="monospace")
+            yh -= 0.036
+        ax3.axhline(yh + 0.010, color="#aaa", linewidth=0.8, xmin=0.01, xmax=0.99)
+        tot_bal   = total_inc - total_exp
+        tot_color = "#27ae60" if tot_bal >= 0 else "#c0392b"
+        ax3.text(0.01, yh, "ИТОГО", fontsize=10, fontweight="bold", color="#1a2040", va="top")
+        ax3.text(0.35, yh, f"{total_exp:,.0f} ₴",
+                 fontsize=10, fontweight="bold", color="#c0392b", va="top",
+                 ha="right", fontfamily="monospace")
+        ax3.text(0.57, yh, f"{total_inc:,.0f} ₴",
+                 fontsize=10, fontweight="bold", color="#27ae60", va="top",
+                 ha="right", fontfamily="monospace")
+        ax3.text(0.79, yh, f"{tot_bal:+,.0f} ₴",
+                 fontsize=10, fontweight="bold", color=tot_color, va="top",
+                 ha="right", fontfamily="monospace")
+        pdf.savefig(fig3, bbox_inches="tight")
+        plt.close(fig3)
+
+    buf.seek(0)
+    return buf.read()
+
+
 async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """/report — show month picker to choose which month to generate PDF for."""
+    """/report — choose monthly or yearly PDF report."""
     if not _auth(update, ctx):
         return
     notion = _notion(ctx)
@@ -3220,119 +3609,250 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    now = _local_now()
-    buttons: list[list] = []
-    row: list = []
-    for i in range(6):
-        # go back i months from current
-        month_offset = now.month - 1 - i
-        year  = now.year + month_offset // 12
-        month = month_offset % 12 + 1
-        label = f"{_MONTHS_RU[month - 1].capitalize()} {year}"
-        row.append(InlineKeyboardButton(label, callback_data=f"rpt:{year}:{month:02d}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    # Current month option
-    buttons.append([InlineKeyboardButton(
-        f"📅 {_MONTHS_RU[now.month-1].capitalize()} {now.year} (текущий)",
-        callback_data=f"rpt:{now.year}:{now.month:02d}:current"
-    )])
-
     await update.message.reply_text(
-        "📄 <b>Выбери месяц для отчёта:</b>",
+        "📄 <b>Выбери тип отчёта:</b>",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📅 По месяцу", callback_data="rpt:mode:m"),
+            InlineKeyboardButton("📆 За год",    callback_data="rpt:mode:y"),
+        ]]),
     )
 
 
 async def handle_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle rpt:YYYY:MM or rpt:YYYY:MM:current inline button."""
+    """Handle all rpt:* inline buttons (mode picker, year/month pickers, PDF generation)."""
     query = update.callback_query
     await query.answer()
 
-    parts = (query.data or "").split(":")
-    # parts: ["rpt", "YYYY", "MM"] or ["rpt", "YYYY", "MM", "current"]
-    if len(parts) < 3:
-        return
-
-    rep_year   = int(parts[1])
-    rep_month  = int(parts[2])
-    is_current = len(parts) > 3 and parts[3] == "current"
-
-    notion = _notion(ctx)
-    if not notion:
-        await query.edit_message_text("⚠️ Notion не настроен.")
-        return
-
-    month_name = _MONTHS_RU[rep_month - 1]
-    await query.edit_message_text(f"📄 Генерирую отчёт за {month_name} {rep_year}…")
+    parts  = (query.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    now    = _local_now()
 
     import calendar as _cal
-    if is_current:
-        now          = _local_now()
-        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        period_end   = now
-    else:
-        days_in_month = _cal.monthrange(rep_year, rep_month)[1]
-        period_start  = _local_now().replace(
-            year=rep_year, month=rep_month, day=1,
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        period_end = period_start.replace(day=days_in_month, hour=23, minute=59, second=59)
-
-    try:
-        cats_full, txns = await asyncio.gather(
-            asyncio.to_thread(notion.get_categories_full),
-            asyncio.to_thread(notion.get_transactions_by_period, period_start, period_end),
-        )
-    except Exception as exc:
-        logger.error("handle_report_callback: fetch failed: %s", exc)
-        await query.edit_message_text("❌ Не удалось загрузить данные из Notion.")
-        return
-
-    txns_enriched = _enrich_txns(txns, cats_full)
-
-    by_cat: dict[str, float] = {}
-    total_exp = 0.0
-    total_inc = 0.0
-    for txn in txns_enriched:
-        amt = txn.get("amount") or 0.0
-        if amt > 0:
-            cname = txn.get("category") or "Без категории"
-            by_cat[cname] = by_cat.get(cname, 0.0) + amt
-            total_exp    += amt
-        elif amt < 0:
-            total_inc += (-amt)
-
-    try:
-        pdf_bytes = await asyncio.to_thread(
-            _generate_monthly_pdf,
-            month_name, rep_year, rep_month,
-            by_cat, total_exp, total_inc, txns_enriched,
-        )
-    except Exception as exc:
-        logger.error("handle_report_callback: PDF generation failed: %s", exc)
-        await query.edit_message_text(f"❌ Ошибка генерации PDF: {exc}")
-        return
-
     import io as _io
-    filename = f"report_{rep_year}_{rep_month:02d}.pdf"
-    caption  = (
-        f"📊 <b>Отчёт за {month_name} {rep_year}</b>\n\n"
-        f"💸 Расходы: {total_exp:,.2f} ₴\n"
-        f"💰 Доходы:  <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>\n"
-        f"💼 Баланс:  <tg-spoiler>{total_inc - total_exp:+,.2f} ₴</tg-spoiler>"
-    )
-    await query.message.reply_document(
-        document=_io.BytesIO(pdf_bytes),
-        filename=filename,
-        caption=caption,
-        parse_mode=ParseMode.HTML,
-    )
-    await query.edit_message_text(f"✅ Отчёт за {month_name} {rep_year} готов!")
+
+    # ── Mode picker → year picker ─────────────────────────────────────────────
+    if action == "mode":
+        rtype    = parts[2] if len(parts) > 2 else "m"
+        min_year = ctx.bot_data.get("min_year", now.year - 4)
+        years    = list(range(now.year, min_year - 1, -1))
+        buttons: list[list] = []
+        row: list = []
+        for yr in years:
+            cb = f"rpt:my:{yr}" if rtype == "m" else f"rpt:y:{yr}"
+            row.append(InlineKeyboardButton(str(yr), callback_data=cb))
+            if len(row) == 3:
+                buttons.append(row); row = []
+        if row:
+            buttons.append(row)
+        label = "месяца" if rtype == "m" else "года"
+        await query.edit_message_text(
+            f"📄 <b>Выбери {label}:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    # ── Year chosen → month picker ────────────────────────────────────────────
+    if action == "my":
+        yr      = int(parts[2])
+        buttons = []
+        row     = []
+        for m in range(1, 13):
+            lbl = _MONTHS_RU[m - 1].capitalize()
+            if yr == now.year and m == now.month:
+                lbl += " ●"
+            row.append(InlineKeyboardButton(lbl, callback_data=f"rpt:m:{yr}:{m:02d}"))
+            if len(row) == 3:
+                buttons.append(row); row = []
+        if row:
+            buttons.append(row)
+        await query.edit_message_text(
+            f"📅 <b>Выбери месяц ({yr}):</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    # ── Monthly PDF ───────────────────────────────────────────────────────────
+    is_monthly = (action == "m") or (action.isdigit() and len(parts) >= 3)
+    if is_monthly:
+        if action == "m":
+            rep_year   = int(parts[2])
+            rep_month  = int(parts[3])
+            is_current = len(parts) > 4 and parts[4] == "cur"
+        else:  # backward-compat: rpt:YYYY:MM[:current]
+            rep_year   = int(parts[1])
+            rep_month  = int(parts[2])
+            is_current = len(parts) > 3 and parts[3] == "current"
+
+        notion = _notion(ctx)
+        if not notion:
+            await query.edit_message_text("⚠️ Notion не настроен.")
+            return
+
+        month_name = _MONTHS_RU[rep_month - 1]
+        await query.edit_message_text(f"📄 Генерирую отчёт за {month_name} {rep_year}…")
+
+        if is_current:
+            period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            period_end   = now
+        else:
+            days_in = _cal.monthrange(rep_year, rep_month)[1]
+            period_start = now.replace(
+                year=rep_year, month=rep_month, day=1,
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            period_end = period_start.replace(day=days_in, hour=23, minute=59, second=59)
+
+        # Previous month for comparison
+        prev_end_dt   = period_start - timedelta(seconds=1)
+        prev_start_dt = prev_end_dt.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0,
+        )
+        prev_days = _cal.monthrange(prev_start_dt.year, prev_start_dt.month)[1]
+        prev_end_dt = prev_start_dt.replace(day=prev_days, hour=23, minute=59, second=59)
+
+        try:
+            cats_full, txns, prev_txns = await asyncio.gather(
+                asyncio.to_thread(notion.get_categories_full),
+                asyncio.to_thread(notion.get_transactions_by_period, period_start, period_end),
+                asyncio.to_thread(notion.get_transactions_by_period, prev_start_dt, prev_end_dt),
+            )
+        except Exception as exc:
+            logger.error("handle_report_callback monthly fetch: %s", exc)
+            await query.edit_message_text("❌ Не удалось загрузить данные из Notion.")
+            return
+
+        txns_enriched = _enrich_txns(txns, cats_full)
+        prev_enriched = _enrich_txns(prev_txns, cats_full)
+
+        by_cat: dict[str, float] = {}
+        total_exp = total_inc = 0.0
+        for txn in txns_enriched:
+            amt = txn.get("amount") or 0.0
+            if amt > 0:
+                cname = txn.get("category") or "Без категории"
+                by_cat[cname] = by_cat.get(cname, 0.0) + amt
+                total_exp    += amt
+            elif amt < 0:
+                total_inc += (-amt)
+
+        prev_by_cat: dict[str, float] = {}
+        for txn in prev_enriched:
+            amt = txn.get("amount") or 0.0
+            if amt > 0:
+                cname = txn.get("category") or "Без категории"
+                prev_by_cat[cname] = prev_by_cat.get(cname, 0.0) + amt
+
+        try:
+            pdf_bytes = await asyncio.to_thread(
+                _generate_monthly_pdf,
+                month_name, rep_year, rep_month,
+                by_cat, total_exp, total_inc, txns_enriched,
+                prev_by_cat,
+            )
+        except Exception as exc:
+            logger.error("handle_report_callback monthly PDF: %s", exc)
+            await query.edit_message_text(f"❌ Ошибка генерации PDF: {exc}")
+            return
+
+        filename = f"report_{rep_year}_{rep_month:02d}.pdf"
+        caption  = (
+            f"📊 <b>Отчёт за {month_name} {rep_year}</b>\n\n"
+            f"💸 Расходы: {total_exp:,.2f} ₴\n"
+            f"💰 Доходы:  <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>\n"
+            f"💼 Баланс:  <tg-spoiler>{total_inc - total_exp:+,.2f} ₴</tg-spoiler>"
+        )
+        await query.message.reply_document(
+            document=_io.BytesIO(pdf_bytes),
+            filename=filename,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+        )
+        await query.edit_message_text(f"✅ Отчёт за {month_name} {rep_year} готов!")
+        return
+
+    # ── Yearly PDF ────────────────────────────────────────────────────────────
+    if action == "y":
+        rep_year = int(parts[2])
+        notion   = _notion(ctx)
+        if not notion:
+            await query.edit_message_text("⚠️ Notion не настроен.")
+            return
+
+        await query.edit_message_text(f"📆 Генерирую годовой отчёт за {rep_year}…")
+
+        year_start = now.replace(
+            year=rep_year, month=1,  day=1,
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        year_end = now.replace(
+            year=rep_year, month=12, day=31,
+            hour=23, minute=59, second=59, microsecond=0,
+        )
+        if year_end > now:
+            year_end = now
+
+        try:
+            cats_full, all_txns = await asyncio.gather(
+                asyncio.to_thread(notion.get_categories_full),
+                asyncio.to_thread(notion.get_transactions_by_period, year_start, year_end),
+            )
+        except Exception as exc:
+            logger.error("handle_report_callback yearly fetch: %s", exc)
+            await query.edit_message_text("❌ Не удалось загрузить данные из Notion.")
+            return
+
+        all_enriched    = _enrich_txns(all_txns, cats_full)
+        months_exp      = [0.0] * 12
+        months_inc      = [0.0] * 12
+        overall_by_cat: dict[str, float] = {}
+        total_exp = total_inc = 0.0
+
+        for txn in all_enriched:
+            amt = txn.get("amount") or 0.0
+            ds  = txn.get("date") or ""
+            try:
+                mi = int(ds[5:7]) - 1
+            except Exception:
+                continue
+            if not (0 <= mi <= 11):
+                continue
+            if amt > 0:
+                months_exp[mi]   += amt
+                total_exp        += amt
+                cname             = txn.get("category") or "Без категории"
+                overall_by_cat[cname] = overall_by_cat.get(cname, 0.0) + amt
+            elif amt < 0:
+                months_inc[mi] += (-amt)
+                total_inc      += (-amt)
+
+        try:
+            pdf_bytes = await asyncio.to_thread(
+                _generate_yearly_pdf,
+                rep_year, months_exp, months_inc,
+                overall_by_cat, total_exp, total_inc,
+            )
+        except Exception as exc:
+            logger.error("handle_report_callback yearly PDF: %s", exc)
+            await query.edit_message_text(f"❌ Ошибка генерации PDF: {exc}")
+            return
+
+        filename = f"report_{rep_year}_yearly.pdf"
+        caption  = (
+            f"📆 <b>Годовой отчёт {rep_year}</b>\n\n"
+            f"💸 Расходы: {total_exp:,.2f} ₴\n"
+            f"💰 Доходы:  <tg-spoiler>{total_inc:,.2f} ₴</tg-spoiler>\n"
+            f"💼 Баланс:  <tg-spoiler>{total_inc - total_exp:+,.2f} ₴</tg-spoiler>"
+        )
+        await query.message.reply_document(
+            document=_io.BytesIO(pdf_bytes),
+            filename=filename,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+        )
+        await query.edit_message_text(f"✅ Годовой отчёт за {rep_year} готов!")
 
 
 # Отправить PDF-отчёт (запускается каждый день, отправляет только 1-го числа)
