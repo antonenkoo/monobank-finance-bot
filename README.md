@@ -160,7 +160,7 @@ A bot token is a secret key that connects your copy of the bot to Telegram.
 5. After you finish, BotFather sends a token that looks like:
 
    ```
-   7412638501:AAFxyz123abcDEF456ghiJKL789mnoPQR012
+   7412638501:AAFxyz123abcDEF456ghiJKL789mnoPQR000
    ```
 
 6. Copy and save this token — you'll add it to the config file in Step 10.
@@ -171,12 +171,9 @@ A bot token is a secret key that connects your copy of the bot to Telegram.
 
 The Monobank token lets the bot receive your transaction data.
 
-1. Open the **Monobank** mobile app
-2. Tap your profile photo (top left corner of the main screen)
-3. Scroll down and tap **"Особисті дані"** (Personal data)
-4. Tap **"Токен для розробників"** (Developer token)
-5. If you've never done this before, tap the button to generate a token
-6. Copy the token — it's a long string of letters and numbers
+1. Open the **Monobank** [API website](https://api.monobank.ua/index.html)
+2. If you've never done this before, tap the button to generate a token
+3. Copy the token — it's a long string of letters and numbers
 
 > This token gives read-only access to your account info and transaction list. Never share it publicly.
 
