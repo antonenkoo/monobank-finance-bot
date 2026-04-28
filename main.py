@@ -29,6 +29,7 @@ from bot_handlers import (
     cmd_stats,
     handle_card_notes_text,
     handle_category_callback,
+    handle_income_note_callback,
     handle_notes_skip_callback,
     handle_report_callback,
     handle_skip_txn_callback,
@@ -36,6 +37,7 @@ from bot_handlers import (
     make_feedback_handler,
     make_settings_handler,
     make_templates_handler,
+    process_api_txn_queue,
     process_trigger_queue,
     process_webhook_queue,
     _refresh_stats_cache,
@@ -292,6 +294,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_category_callback,   pattern=r"^cat:"))
     app.add_handler(CallbackQueryHandler(handle_skip_txn_callback,   pattern=r"^skip_txn:"))
     app.add_handler(CallbackQueryHandler(handle_notes_skip_callback, pattern=r"^notes_skip:"))
+    app.add_handler(CallbackQueryHandler(handle_income_note_callback, pattern=r"^inc_note:"))
     app.add_handler(CallbackQueryHandler(handle_report_callback,     pattern=r"^rpt:"))
 
     # Periodic queue drains
@@ -306,6 +309,12 @@ def main() -> None:
         interval=1.0,
         first=2.0,
         name="trigger_drain",
+    )
+    app.job_queue.run_repeating(
+        process_api_txn_queue,
+        interval=1.0,
+        first=2.0,
+        name="api_txn_drain",
     )
     # Monthly report — checked daily at 09:00 local time; sends on 1st of month
     import datetime as _dt

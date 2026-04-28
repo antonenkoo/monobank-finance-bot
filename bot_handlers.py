@@ -40,6 +40,7 @@ from config_manager import (
     TemplateManager,
 )
 from monobank_service import (
+    api_txn_queue,
     format_transaction_message,
     get_accounts,
     restart_webhook_server,
@@ -250,6 +251,7 @@ def _categories_kb(cats: list[dict]) -> ReplyKeyboardMarkup:
 # Клавиатура списка шаблонов
 def _templates_kb(templates: list[dict]) -> ReplyKeyboardMarkup:
     rows = [[t["name"]] for t in templates]
+    rows.append(["➕ Добавить шаблон"])
     rows.append(["◀️ Назад"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -574,14 +576,42 @@ _CHANGELOG: dict[str, str] = {
         "🐛 <b>Исправления</b>\n"
         "Фидбек теперь стабильно доходит — исправлен конфликт ngrok между ботами"
     ),
+    "v1.5.4": (
+        "🚀 <b>v1.5.4 — Годовой отчёт, аналитика и API</b>\n"
+        "───────────────────────\n\n"
+        "📄 <b>Отчёты</b>\n\n"
+        "📅 <b>Выбор типа отчёта</b>\n"
+        "Команда /report теперь предлагает два варианта: отчёт за месяц или за год\n\n"
+        "📆 <b>Годовой PDF-отчёт</b>\n"
+        "Полный отчёт за любой год: расходы и доходы по месяцам, диаграмма категорий за год, тренд 12 месяцев и баланс\n\n"
+        "🔍 <b>Аналитическая страница в месячном отчёте</b>\n"
+        "Новая страница в каждом PDF: топ-5 категорий с динамикой к прошлому периоду, самый затратный день, топ-10 крупных трат, аномальные расходы (>2σ) и рекомендации\n\n"
+        "───────────────────────\n"
+        "💳 <b>Транзакции</b>\n\n"
+        "➕ <b>Доходы без выбора категории</b>\n"
+        "Входящие переводы от Monobank больше не спрашивают категорию — только предложение добавить заметку или пропустить\n\n"
+        "📋 <b>Создание шаблона из меню шаблонов</b>\n"
+        "В меню шаблонов появилась кнопка ➕ Добавить шаблон — больше не нужно выходить в главное меню или помнить /create_template\n\n"
+        "───────────────────────\n"
+        "🔌 <b>REST API</b>\n\n"
+        "📂 <b>GET /categories</b>\n"
+        "Внешние приложения теперь могут получить список категорий из Notion (кэш 5 минут)\n\n"
+        "📝 <b>POST /transactions</b>\n"
+        "Создание транзакций через API — с уведомлением в Telegram о каждой записи\n\n"
+        "───────────────────────\n"
+        "🐛 <b>Исправления</b>\n\n"
+        "⚙️ <b>/update теперь использует venv pip</b>\n"
+        "При обновлении зависимости устанавливаются в виртуальное окружение, а не в системный Python"
+    ),
 }
 
 _VERSIONS_ORDERED = [
-    "v1.5.3", "v1.5.2", "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
+    "v1.5.4", "v1.5.3", "v1.5.2", "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
     "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0",
 ]
 
 _VERSION_KB = _kb(
+    ["v1.5.4"],
     ["v1.5.3", "v1.5.2"],
     ["v1.5.1"],
     ["v1.5"],
@@ -1405,6 +1435,9 @@ async def tpl_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await _main_menu(update.message, _cfg(ctx))
         return ConversationHandler.END
 
+    if t == "➕ Добавить шаблон":
+        return await create_template_entry(update, ctx)
+
     tpl_id = ctx.user_data.get("tpl_map", {}).get(t)
     if not tpl_id:
         await update.message.reply_text("Выбери шаблон из списка:")
@@ -1758,6 +1791,15 @@ def make_templates_handler() -> ConversationHandler:
             TPL_EDIT_SIGN:     [MessageHandler(_TXT, tpl_edit_sign)],
             TPL_EDIT_CATEGORY: [MessageHandler(_TXT, tpl_edit_category)],
             TPL_EDIT_NOTES:    [MessageHandler(_TXT, tpl_edit_notes)],
+            # States for create_template flow launched from ➕ Добавить шаблон
+            ADD_DESC:          [MessageHandler(_TXT, add_desc)],
+            ADD_AMOUNT:        [MessageHandler(_TXT, add_amount)],
+            ADD_SIGN:          [MessageHandler(_TXT, add_sign)],
+            ADD_TIME_CHOICE:   [MessageHandler(_TXT, add_time_choice)],
+            ADD_CUSTOM_TIME:   [MessageHandler(_TXT, add_custom_time)],
+            ADD_CATEGORY:      [MessageHandler(_TXT, add_category_text)],
+            ADD_SAVE_CONFIRM:  [MessageHandler(_TXT, add_save_confirm)],
+            ADD_TPL_NAME:      [MessageHandler(_TXT, add_tpl_name)],
         },
         fallbacks=[CommandHandler("cancel", tpl_cancel)],
         per_user=True, per_chat=True, per_message=False,
@@ -1877,27 +1919,42 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.warning("Silent: Notion not configured — transaction dropped")
 
         else:
-            # ── Pro mode: send message + inline category buttons ──────────────
-            # Notion save happens ONLY when user selects a category (handle_category_callback).
-            cats = await _fetch_cats(ctx)
-            logger.info("Pro: building keyboard with %d categories", len(cats))
+            # ── Pro mode: send message + inline buttons ───────────────────────
+            is_income = item.get("amount", 0) > 0
 
-            # Smart category suggestion
-            suggested: Optional[dict] = None
-            if _cfg(ctx).get_smart_cats_enabled():
-                desc_key = item.get("description", "")
-                mem = _smart_cats.get(desc_key)
-                if mem:
-                    # Verify the category still exists in current list
-                    mem_id_short = mem["category_id"].replace("-", "")
-                    if any(c["id"].replace("-", "") == mem_id_short for c in cats):
-                        suggested = mem
-
-            text     = format_transaction_message(item)
-            txn_id   = _pending_store.add(item, chat_id, text)
-            keyboard = _build_category_inline_kb(txn_id, cats, suggested=suggested)
-
+            text   = format_transaction_message(item)
+            txn_id = _pending_store.add(item, chat_id, text)
             bot: Bot = ctx.bot
+
+            if is_income:
+                # Income: no category needed — offer note or skip only
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💬 Добавить заметку",  callback_data=f"inc_note:{txn_id}")],
+                    [InlineKeyboardButton("⏭ Сохранить",         callback_data=f"notes_skip:{txn_id}")],
+                    [InlineKeyboardButton("❌ Не сохранять",      callback_data=f"skip_txn:{txn_id}")],
+                ])
+                logger.info("Pro/income: '%s' %.2f UAH", item.get("description", "?"), item.get("amount", 0) / 100)
+            else:
+                # Expense: show category picker (with smart suggestion)
+                cats = await _fetch_cats(ctx)
+                logger.info("Pro: building keyboard with %d categories", len(cats))
+
+                suggested: Optional[dict] = None
+                if _cfg(ctx).get_smart_cats_enabled():
+                    desc_key = item.get("description", "")
+                    mem = _smart_cats.get(desc_key)
+                    if mem:
+                        mem_id_short = mem["category_id"].replace("-", "")
+                        if any(c["id"].replace("-", "") == mem_id_short for c in cats):
+                            suggested = mem
+
+                keyboard = _build_category_inline_kb(txn_id, cats, suggested=suggested)
+                logger.info(
+                    "Pro: sent '%s' %.2f UAH — waiting for category selection",
+                    item.get("description", "?"),
+                    abs(item.get("amount", 0) / 100),
+                )
+
             try:
                 sent = await bot.send_message(
                     chat_id=chat_id,
@@ -1906,11 +1963,6 @@ async def process_webhook_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
                     reply_markup=keyboard,
                 )
                 _pending_store.set_message_id(txn_id, sent.message_id)
-                logger.info(
-                    "Pro: sent '%s' %.2f UAH — waiting for category selection",
-                    item.get("description", "?"),
-                    abs(item.get("amount", 0) / 100),
-                )
             except Exception as exc:
                 logger.error("Pro: failed to send webhook message: %s", exc)
                 _pending_store.remove(txn_id)
@@ -2013,6 +2065,32 @@ async def handle_notes_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_T
         return
 
     await _save_card_txn(query=query, ctx=ctx, txn_id=txn_id, pending=pending, notes="")
+
+
+async def handle_income_note_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """User tapped '💬 Добавить заметку' on an income transaction — prompt for note text."""
+    query = update.callback_query
+    await query.answer()
+
+    txn_id  = query.data.split(":", 1)[1]
+    pending = _pending_store.get(txn_id)
+    if not pending:
+        await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    _pending_store.update_for_notes(txn_id, None, "без категории")
+    original_text = pending.get("text", "")
+    try:
+        await query.edit_message_text(
+            original_text + "\n\n💬 <i>Напиши заметку или сохрани без неё:</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭ Сохранить без заметки", callback_data=f"notes_skip:{txn_id}")],
+                [InlineKeyboardButton("❌ Не сохранять",          callback_data=f"skip_txn:{txn_id}")],
+            ]),
+        )
+    except Exception as exc:
+        logger.error("handle_income_note_callback: edit failed: %s", exc)
 
 
 async def handle_card_notes_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3598,6 +3676,42 @@ def _generate_yearly_pdf(
     return buf.read()
 
 
+async def _show_month_picker(
+    query,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    yr: int,
+    now,
+) -> None:
+    """Edit the message to show a 12-month grid for `yr`, with ◀/▶ year navigation."""
+    buttons: list[list] = []
+    row: list = []
+    for m in range(1, 13):
+        lbl = _MONTHS_RU[m - 1].capitalize()
+        if yr == now.year and m == now.month:
+            lbl += " ●"
+        row.append(InlineKeyboardButton(lbl, callback_data=f"rpt:m:{yr}:{m:02d}"))
+        if len(row) == 3:
+            buttons.append(row); row = []
+    if row:
+        buttons.append(row)
+
+    # Year navigation row
+    min_year = ctx.bot_data.get("min_year", now.year - 4)
+    nav: list = []
+    if yr - 1 >= min_year:
+        nav.append(InlineKeyboardButton(f"◀ {yr - 1}", callback_data=f"rpt:my:{yr - 1}"))
+    if yr + 1 <= now.year:
+        nav.append(InlineKeyboardButton(f"{yr + 1} ▶", callback_data=f"rpt:my:{yr + 1}"))
+    if nav:
+        buttons.append(nav)
+
+    await query.edit_message_text(
+        f"📅 <b>Выбери месяц ({yr}):</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """/report — choose monthly or yearly PDF report."""
     if not _auth(update, ctx):
@@ -3631,47 +3745,36 @@ async def handle_report_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     import calendar as _cal
     import io as _io
 
-    # ── Mode picker → year picker ─────────────────────────────────────────────
+    # ── Mode picker ───────────────────────────────────────────────────────────
     if action == "mode":
-        rtype    = parts[2] if len(parts) > 2 else "m"
-        min_year = ctx.bot_data.get("min_year", now.year - 4)
-        years    = list(range(now.year, min_year - 1, -1))
-        buttons: list[list] = []
-        row: list = []
-        for yr in years:
-            cb = f"rpt:my:{yr}" if rtype == "m" else f"rpt:y:{yr}"
-            row.append(InlineKeyboardButton(str(yr), callback_data=cb))
-            if len(row) == 3:
-                buttons.append(row); row = []
-        if row:
-            buttons.append(row)
-        label = "месяца" if rtype == "m" else "года"
-        await query.edit_message_text(
-            f"📄 <b>Выбери {label}:</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        rtype = parts[2] if len(parts) > 2 else "m"
+
+        if rtype == "m":
+            # Monthly → show months for current year immediately
+            await _show_month_picker(query, ctx, now.year, now)
+        else:
+            # Yearly → show year picker
+            min_year = ctx.bot_data.get("min_year", now.year - 4)
+            years    = list(range(now.year, min_year - 1, -1))
+            buttons: list[list] = []
+            row: list = []
+            for yr in years:
+                row.append(InlineKeyboardButton(str(yr), callback_data=f"rpt:y:{yr}"))
+                if len(row) == 3:
+                    buttons.append(row); row = []
+            if row:
+                buttons.append(row)
+            await query.edit_message_text(
+                "📆 <b>Выбери год:</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
         return
 
     # ── Year chosen → month picker ────────────────────────────────────────────
     if action == "my":
-        yr      = int(parts[2])
-        buttons = []
-        row     = []
-        for m in range(1, 13):
-            lbl = _MONTHS_RU[m - 1].capitalize()
-            if yr == now.year and m == now.month:
-                lbl += " ●"
-            row.append(InlineKeyboardButton(lbl, callback_data=f"rpt:m:{yr}:{m:02d}"))
-            if len(row) == 3:
-                buttons.append(row); row = []
-        if row:
-            buttons.append(row)
-        await query.edit_message_text(
-            f"📅 <b>Выбери месяц ({yr}):</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        yr = int(parts[2])
+        await _show_month_picker(query, ctx, yr, now)
         return
 
     # ── Monthly PDF ───────────────────────────────────────────────────────────
@@ -3957,6 +4060,52 @@ async def send_monthly_report(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ═════════════════════════════════════════════════════════════════════════════
 
 # Обработать очередь быстрых шаблонов
+async def process_api_txn_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB job: notify user in Telegram about transactions saved via POST /transactions."""
+    from monobank_service import _categories_cache
+
+    cfg     = _cfg(ctx)
+    chat_id = cfg.get("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        return
+
+    while not api_txn_queue.empty():
+        try:
+            txn = api_txn_queue.get_nowait()
+        except Exception:
+            break
+
+        name   = txn.get("name", "?")
+        amount = txn.get("amount", 0.0)
+        notes  = txn.get("notes", "")
+        cat_id = txn.get("category_id") or ""
+
+        # Resolve category name from the in-memory cache (populated by GET /categories)
+        cat_name = "—"
+        if cat_id and _categories_cache:
+            match = next(
+                (c for c in _categories_cache
+                 if c["id"].replace("-", "") == cat_id.replace("-", "")),
+                None,
+            )
+            if match:
+                cat_name = match["name"]
+
+        sign = "➖" if amount > 0 else "➕"
+        text = (
+            f"📲 <b>Запись добавлена через API</b>\n\n"
+            f"{sign} <b>{name}</b>\n"
+            f"💰 {abs(amount):,.2f} ₴\n"
+            f"🏷 {cat_name}"
+            + (f"\n💬 {notes}" if notes else "")
+            + "\n\n✅ Сохранено в Notion"
+        )
+        try:
+            await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+        except Exception as exc:
+            logger.error("process_api_txn_queue: send failed: %s", exc)
+
+
 async def process_trigger_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """PTB job: drain trigger_queue, save each template transaction to Notion + notify."""
     cfg     = _cfg(ctx)
