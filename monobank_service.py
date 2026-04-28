@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # ── Shared queues (consumed by PTB jobs in bot_handlers.py) ───────────────────
 webhook_queue: queue.Queue = queue.Queue()  # Monobank StatementItem dicts
 trigger_queue: queue.Queue = queue.Queue()  # template dicts from /trigger endpoint
+api_txn_queue: queue.Queue = queue.Queue()  # transactions saved via POST /transactions
 
 # ── Feedback storage ───────────────────────────────────────────────────────────
 from config_manager import USER_DATA_DIR
@@ -136,6 +137,173 @@ async def trigger_template(name: str = "", id: str = "") -> Response:
             ensure_ascii=False,
         ),
         status_code=200,
+        media_type="application/json; charset=utf-8",
+    )
+
+
+# ── Notion API routes ─────────────────────────────────────────────────────────
+
+def _make_notion():
+    """Build a NotionService from env vars. Returns None if not configured."""
+    from notion_service import NotionService
+    api_key = os.getenv("NOTION_API_KEY", "")
+    txn_db  = os.getenv("NOTION_TRANSACTIONS_DB_ID", "")
+    cat_db  = os.getenv("NOTION_CATEGORIES_DB_ID", "")
+    if not (api_key and txn_db and cat_db):
+        return None
+    return NotionService(
+        api_key=api_key,
+        transactions_db_id=txn_db,
+        categories_db_id=cat_db,
+        remaining_prop=os.getenv("NOTION_REMAINING_PROP", "Remaining"),
+        limit_prop=os.getenv("NOTION_LIMIT_PROP", ""),
+    )
+
+
+# Simple in-memory cache for categories (avoids a Notion round-trip on every call)
+_categories_cache: list[dict] = []
+_categories_cache_ts: float = 0.0
+_CATEGORIES_TTL = 300  # seconds
+
+
+@app.get("/categories")
+async def api_categories() -> Response:
+    """
+    Return all Notion categories sorted alphabetically.
+
+    GET /categories
+    → {"categories": [{"id": "...", "name": "..."}, ...]}
+
+    Result is cached for 5 minutes to avoid slow Notion API round-trips.
+    """
+    global _categories_cache, _categories_cache_ts
+
+    if _categories_cache and time.monotonic() - _categories_cache_ts < _CATEGORIES_TTL:
+        return Response(
+            content=json.dumps({"categories": _categories_cache}, ensure_ascii=False),
+            status_code=200,
+            media_type="application/json; charset=utf-8",
+        )
+
+    ns = _make_notion()
+    if not ns:
+        return Response(
+            content=json.dumps({"error": "Notion not configured"}, ensure_ascii=False),
+            status_code=503,
+            media_type="application/json; charset=utf-8",
+        )
+    try:
+        cats = await asyncio.to_thread(ns.get_categories)
+        _categories_cache    = cats
+        _categories_cache_ts = time.monotonic()
+    except Exception as exc:
+        logger.error("GET /categories error: %s", exc)
+        return Response(
+            content=json.dumps({"error": str(exc)}, ensure_ascii=False),
+            status_code=500,
+            media_type="application/json; charset=utf-8",
+        )
+    return Response(
+        content=json.dumps({"categories": cats}, ensure_ascii=False),
+        status_code=200,
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@app.post("/transactions")
+async def api_create_transaction(request: Request) -> Response:
+    """
+    Save a transaction directly to Notion.
+
+    POST /transactions
+    Content-Type: text/plain  (raw JSON string in the body)
+
+    Body: {"name":"Silpo","amount":150.50,"category_id":"abc123...","notes":"groceries"}
+
+    Required: name, amount
+    Optional: category_id, notes, date (ISO-8601, defaults to now)
+
+    amount > 0  →  expense
+    amount < 0  →  income
+    """
+    try:
+        raw  = await request.body()
+        data = json.loads(raw)
+    except Exception:
+        return Response(
+            content=json.dumps({"error": "Body must be a valid JSON string"}, ensure_ascii=False),
+            status_code=400,
+            media_type="application/json; charset=utf-8",
+        )
+
+    name   = data.get("name")
+    amount = data.get("amount")
+    if not name or amount is None:
+        return Response(
+            content=json.dumps({"error": "name and amount are required"}, ensure_ascii=False),
+            status_code=400,
+            media_type="application/json; charset=utf-8",
+        )
+
+    category_id = data.get("category_id") or None
+    notes       = data.get("notes", "")
+
+    import datetime as _dt
+    date_str = data.get("date")
+    if date_str:
+        try:
+            dt = _dt.datetime.fromisoformat(date_str)
+        except ValueError:
+            return Response(
+                content=json.dumps(
+                    {"error": "Invalid date — use ISO-8601, e.g. 2026-04-25T14:00:00"},
+                    ensure_ascii=False,
+                ),
+                status_code=400,
+                media_type="application/json; charset=utf-8",
+            )
+    else:
+        dt = _dt.datetime.now()
+
+    ns = _make_notion()
+    if not ns:
+        return Response(
+            content=json.dumps({"error": "Notion not configured"}, ensure_ascii=False),
+            status_code=503,
+            media_type="application/json; charset=utf-8",
+        )
+
+    try:
+        ok = await asyncio.to_thread(
+            ns.create_transaction, name, float(amount), dt, category_id, notes,
+        )
+    except Exception as exc:
+        logger.error("POST /transactions error: %s", exc)
+        return Response(
+            content=json.dumps({"error": str(exc)}, ensure_ascii=False),
+            status_code=500,
+            media_type="application/json; charset=utf-8",
+        )
+
+    if ok:
+        logger.info("API transaction saved: %s %.2f", name, amount)
+        api_txn_queue.put({
+            "name":        name,
+            "amount":      float(amount),
+            "category_id": category_id,
+            "notes":       notes,
+            "date":        dt.isoformat(),
+        })
+        return Response(
+            content=json.dumps({"status": "ok", "name": name, "amount": amount},
+                               ensure_ascii=False),
+            status_code=200,
+            media_type="application/json; charset=utf-8",
+        )
+    return Response(
+        content=json.dumps({"error": "Notion returned an error — check server logs"},
+                           ensure_ascii=False),
+        status_code=500,
         media_type="application/json; charset=utf-8",
     )
 
@@ -330,7 +498,7 @@ def format_transaction_message(item: dict) -> str:
         lines.append(f"   (операция: {abs(op_amount):.2f})")
     lines += [
         f"🏦 Остаток: {balance_disp} UAH",
-        f"🏷 Категория: {mcc_label}",
+        # f"🏷 Категория: {mcc_label}", // пока не актуально, возможно в будущем переиспользую
         f"🕐 Время: {dt_str}",
     ]
 
