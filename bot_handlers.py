@@ -542,16 +542,6 @@ _CHANGELOG: dict[str, str] = {
         "🕐 <b>Время при ручном добавлении</b>\n"
         "При добавлении транзакции вручную время отображалось в UTC вместо местного — исправлено"
     ),
-    "v1.5.3": (
-        "🚀 <b>v1.5.3 — Скриншоты в фидбеке</b>\n"
-        "───────────────────────\n\n"
-        "📷 <b>Скриншот к фидбеку</b>\n"
-        "Теперь к фидбеку можно прикрепить скриншот. \n\n"
-        "🔄 <b>Новый флоу фидбека</b>\n"
-        "Шаги переупорядочены c учетом нового функционала добавление скриншотов.\n"
-        "💰 <b>Исправлен остаток бюджета</b>\n"
-        "Остаток по категории и общий бюджет после транзакции теперь показывают значения после транзакции."
-    ),
     "v1.5.2": (
         "🚑 <b>v1.5.2 — Hotfix: webhook & /trigger</b>\n"
         "───────────────────────\n\n"
@@ -2274,7 +2264,7 @@ async def _update_budget_display(
     Runs concurrently — the user is never blocked waiting for this.
     Any failure is logged and silently ignored.
     """
-    await asyncio.sleep(4.0)   # give Notion time to recompute formula properties
+    await asyncio.sleep(0.8)   # give Notion time to recompute formula properties
     notion = _notion(ctx)
     if not notion or not chat_id or not message_id:
         return
@@ -2589,13 +2579,11 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 FEEDBACK_TYPE  = 100
 FEEDBACK_TEXT  = 101
 FEEDBACK_VOICE = 102
-FEEDBACK_PHOTO = 103
 
 _DEVELOPER_FEEDBACK_URL = os.getenv("DEVELOPER_FEEDBACK_URL") or os.getenv("FEEDBACK_BOT_URL", "")
 
-_FEEDBACK_TYPE_KB  = _kb(["🐛 Баг", "🌟 Хотелка"], ["◀️ Назад"])
-_FEEDBACK_BACK_KB  = _kb(["◀️ Назад"])
-_FEEDBACK_PHOTO_KB = _kb(["➡️ Пропустить"])
+_FEEDBACK_TYPE_KB = _kb(["🐛 Баг", "🌟 Хотелка"], ["◀️ Назад"])
+_FEEDBACK_BACK_KB = _kb(["◀️ Назад"])
 
 
 # Точка входа в фидбек (/feedback или кнопка)
@@ -2603,11 +2591,8 @@ async def feedback_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /feedback command or 📝 Фидбек button."""
     await update.message.reply_html(
         "📝 <b>Обратная связь</b>\n\n"
-        "Шаги:\n"
-        "1️⃣ Опиши проблему или идею (текст или 🎤 голосовое)\n"
-        "2️⃣ Прикрепи скриншот (необязательно)\n"
-        "3️⃣ Выбери тип: 🐛 Баг или 🌟 Хотелка\n\n"
-        "<b>Шаг 1 из 3</b> — Напиши описание или отправь голосовое:",
+        "Опиши проблему или идею.\n"
+        "Можно отправить текст или 🎤 голосовое сообщение.",
         reply_markup=_FEEDBACK_BACK_KB,
     )
     return FEEDBACK_TEXT
@@ -2624,10 +2609,10 @@ async def feedback_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     ctx.user_data["feedback_draft"] = t
     await update.message.reply_html(
-        "<b>Шаг 2 из 3</b> — Прикрепи скриншот или нажми «Пропустить»:",
-        reply_markup=_FEEDBACK_PHOTO_KB,
+        "Выбери тип заявки:",
+        reply_markup=_FEEDBACK_TYPE_KB,
     )
-    return FEEDBACK_PHOTO
+    return FEEDBACK_TYPE
 
 
 # Выбор типа фидбека (Баг/Фича) и отправка
@@ -2636,19 +2621,52 @@ async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if t == "◀️ Назад":
         await update.message.reply_html(
-            "<b>Шаг 2 из 3</b> — Прикрепи скриншот или нажми «Пропустить»:",
-            reply_markup=_FEEDBACK_PHOTO_KB,
+            "📝 <b>Обратная связь</b>\n\n"
+            "Опиши проблему или идею.\n"
+            "Можно отправить текст или 🎤 голосовое сообщение.",
+            reply_markup=_FEEDBACK_BACK_KB,
         )
-        return FEEDBACK_PHOTO
+        return FEEDBACK_TEXT
 
     if t not in ("🐛 Баг", "🌟 Хотелка"):
         await update.message.reply_text("Выбери тип:", reply_markup=_FEEDBACK_TYPE_KB)
         return FEEDBACK_TYPE
 
     fb_type = "bug" if t == "🐛 Баг" else "feature"
-    ctx.user_data["feedback_type"] = fb_type
+    text    = ctx.user_data.pop("feedback_draft", "")
 
-    await _do_send_feedback(update.message, ctx)
+    user     = update.message.from_user
+    username = user.username or user.first_name or str(user.id)
+    payload  = {
+        "project":       "monobank-finance-bot",
+        "type":          fb_type,
+        "text":          text,
+        "from_user_id":  user.id,
+        "from_username": username,
+        "timestamp":     datetime.now(tz=timezone.utc).isoformat(),
+        "version":       BOT_VERSION,
+    }
+
+    cfg     = _cfg(ctx)
+    dev_url = cfg.get("DEVELOPER_FEEDBACK_URL", "").strip() or _DEVELOPER_FEEDBACK_URL
+    result  = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
+    if not result:
+        logger.warning("Feedback POST failed to %s", dev_url)
+
+    # If this was a voice feedback, also send the voice file
+    ogg   = ctx.user_data.pop("feedback_voice_ogg", None)
+    trans = ctx.user_data.pop("feedback_voice_trans", "")
+    if ogg:
+        feedback_id = result if isinstance(result, str) else "unknown"
+        await asyncio.to_thread(_http_post_voice, dev_url, ogg, feedback_id, trans)
+
+    type_label = "🐛 Баг" if fb_type == "bug" else "🌟 Хотелка"
+    await update.message.reply_html(
+        f"✅ <b>Заявка принята!</b>\n\n"
+        f"{type_label}\n\n"
+        "Спасибо за фидбек — разработчик получит уведомление.",
+        reply_markup=MAIN_KB,
+    )
     return ConversationHandler.END
 
 
@@ -2701,132 +2719,17 @@ async def feedback_voice_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
                 pass
         await ctx.bot.send_message(
             chat_id,
-            "<b>Шаг 1 из 3</b> — Напиши описание или отправь голосовое:",
-            parse_mode="HTML",
+            "📝 Опиши проблему или идею.\nМожно отправить текст или 🎤 голосовое сообщение.",
             reply_markup=_FEEDBACK_BACK_KB,
         )
         return FEEDBACK_TEXT
 
-    # confirmed — remove inline buttons, proceed to photo step
+    # confirmed — remove inline buttons, ask for type via new message
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await ctx.bot.send_message(
-        chat_id,
-        "<b>Шаг 2 из 3</b> — Прикрепи скриншот или нажми «Пропустить»:",
-        parse_mode="HTML",
-        reply_markup=_FEEDBACK_PHOTO_KB,
-    )
-    return FEEDBACK_PHOTO
-
-
-async def _do_send_feedback(update_or_msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the accumulated feedback (text/voice/photo) to the developer endpoint."""
-    fb_type = ctx.user_data.pop("feedback_type", "bug")
-    text    = ctx.user_data.pop("feedback_draft", "")
-
-    # Determine the user object from whichever update type we have
-    if hasattr(update_or_msg, "from_user"):
-        user = update_or_msg.from_user          # Message object
-    elif hasattr(update_or_msg, "message"):
-        user = update_or_msg.message.from_user  # Update object
-    else:
-        user = None
-
-    username = (user.username or user.first_name or str(user.id)) if user else "unknown"
-    user_id  = user.id if user else 0
-
-    payload = {
-        "project":       "monobank-finance-bot",
-        "type":          fb_type,
-        "text":          text,
-        "from_user_id":  user_id,
-        "from_username": username,
-        "timestamp":     datetime.now(tz=timezone.utc).isoformat(),
-        "version":       BOT_VERSION,
-    }
-
-    cfg     = _cfg(ctx)
-    dev_url = cfg.get("DEVELOPER_FEEDBACK_URL", "").strip() or _DEVELOPER_FEEDBACK_URL
-    result  = await asyncio.to_thread(_http_post_feedback, dev_url, payload)
-    if not result:
-        logger.warning("Feedback POST failed to %s", dev_url)
-
-    feedback_id = result if isinstance(result, str) else "unknown"
-
-    ogg   = ctx.user_data.pop("feedback_voice_ogg", None)
-    trans = ctx.user_data.pop("feedback_voice_trans", "")
-    if ogg:
-        await asyncio.to_thread(_http_post_voice, dev_url, ogg, feedback_id, trans)
-
-    photo_bytes = ctx.user_data.pop("feedback_photo_bytes", None)
-    if photo_bytes:
-        await asyncio.to_thread(_http_post_photo, dev_url, photo_bytes, feedback_id)
-
-    type_label = "🐛 Баг" if fb_type == "bug" else "🌟 Хотелка"
-    # Send the confirmation — works for both message and callback query contexts
-    if hasattr(update_or_msg, "reply_html"):
-        await update_or_msg.reply_html(
-            f"✅ <b>Заявка принята!</b>\n\n{type_label}\n\n"
-            "Спасибо за фидбек — разработчик получит уведомление.",
-            reply_markup=MAIN_KB,
-        )
-    elif hasattr(update_or_msg, "message"):
-        await update_or_msg.message.reply_html(
-            f"✅ <b>Заявка принята!</b>\n\n{type_label}\n\n"
-            "Спасибо за фидбек — разработчик получит уведомление.",
-            reply_markup=MAIN_KB,
-        )
-
-
-# Фото на этапе ввода текста — сохраняем и просим добавить описание
-async def feedback_photo_as_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """User sent a photo at the text stage — save it, ask for text description."""
-    photos = update.message.photo
-    if photos:
-        tg_file = await ctx.bot.get_file(photos[-1].file_id)
-        photo_bytes = await tg_file.download_as_bytearray()
-        ctx.user_data["feedback_photo_bytes"] = bytes(photo_bytes)
-    ctx.user_data.setdefault("feedback_draft", "")
-    await update.message.reply_html(
-        "📷 Скриншот получен.\n\n<b>Шаг 3 из 3</b> — Выбери тип заявки:",
-        reply_markup=_FEEDBACK_TYPE_KB,
-    )
-    return FEEDBACK_TYPE
-
-
-# Обработка фото-скриншота в фидбеке
-async def feedback_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """User sent a photo — download and save it, then ask for type."""
-    photos = update.message.photo
-    if not photos:
-        await update.message.reply_text("Пожалуйста, отправь фото или нажми «Пропустить».", reply_markup=_FEEDBACK_PHOTO_KB)
-        return FEEDBACK_PHOTO
-
-    tg_file = await ctx.bot.get_file(photos[-1].file_id)
-    photo_bytes = await tg_file.download_as_bytearray()
-    ctx.user_data["feedback_photo_bytes"] = bytes(photo_bytes)
-
-    await update.message.reply_html(
-        "✅ Скриншот получен.\n\n<b>Шаг 3 из 3</b> — Выбери тип заявки:",
-        reply_markup=_FEEDBACK_TYPE_KB,
-    )
-    return FEEDBACK_TYPE
-
-
-# Пропуск прикрепления фото
-async def feedback_photo_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """User chose to skip attaching a screenshot."""
-    t = update.message.text.strip() if update.message else ""
-    if t != "➡️ Пропустить":
-        await update.message.reply_text("Отправь фото или нажми «Пропустить».", reply_markup=_FEEDBACK_PHOTO_KB)
-        return FEEDBACK_PHOTO
-
-    await update.message.reply_html(
-        "<b>Шаг 3 из 3</b> — Выбери тип заявки:",
-        reply_markup=_FEEDBACK_TYPE_KB,
-    )
+    await ctx.bot.send_message(chat_id, "Выбери тип заявки:", reply_markup=_FEEDBACK_TYPE_KB)
     return FEEDBACK_TYPE
 
 
@@ -2887,33 +2790,6 @@ def _http_post_voice(url: str, ogg: bytes, feedback_id: str, transcription: str)
         logger.debug("_http_post_voice error: %s", exc)
 
 
-# HTTP POST фото-скриншота в feedback-bot (multipart)
-def _http_post_photo(url: str, photo_bytes: bytes, feedback_id: str) -> None:
-    """POST screenshot as multipart/form-data to /feedback/photo."""
-    import uuid as _uuid
-    import urllib.request as _req
-    boundary = "----FormBoundary" + _uuid.uuid4().hex
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="feedback_id"\r\n\r\n'
-        f"{feedback_id}\r\n"
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="screenshot.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
-    ).encode() + photo_bytes + f"\r\n--{boundary}--\r\n".encode()
-    request = _req.Request(
-        url.rstrip("/") + "/feedback/photo",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
-    )
-    try:
-        with _req.urlopen(request, timeout=10):
-            pass
-    except Exception as exc:
-        logger.debug("_http_post_photo error: %s", exc)
-
-
 # Создать ConversationHandler для фидбека
 def make_feedback_handler() -> ConversationHandler:
     """ConversationHandler for the feedback flow. No auth — open to all users."""
@@ -2924,16 +2800,11 @@ def make_feedback_handler() -> ConversationHandler:
         ],
         states={
             FEEDBACK_TEXT: [
-                MessageHandler(filters.PHOTO, feedback_photo_as_text),
                 MessageHandler(_TXT, feedback_text),
                 MessageHandler(filters.VOICE, feedback_voice),
             ],
             FEEDBACK_TYPE:  [MessageHandler(_TXT, feedback_type)],
             FEEDBACK_VOICE: [CallbackQueryHandler(feedback_voice_confirm, pattern=r"^fbv:")],
-            FEEDBACK_PHOTO: [
-                MessageHandler(filters.PHOTO, feedback_photo),
-                MessageHandler(filters.Regex(r"^➡️ Пропустить$"), feedback_photo_skip),
-            ],
         },
         fallbacks=[CommandHandler("cancel", feedback_cancel)],
         per_user=True, per_chat=True, per_message=False,
