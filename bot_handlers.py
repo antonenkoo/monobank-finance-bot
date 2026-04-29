@@ -98,7 +98,12 @@ _STARTUP_MESSAGES = [
 
 
 
-_RELEASE_SHOWN_FILE = USER_DATA_DIR / "release_shown.txt"
+_RELEASE_SHOWN_FILE   = USER_DATA_DIR / "release_shown.txt"
+_UPDATE_NOTIFIED_FILE = USER_DATA_DIR / "update_notified.txt"
+
+_REMOTE_VERSION_URL = (
+    "https://raw.githubusercontent.com/antonenkoo/monobank-finance-bot/main/version.json"
+)
 
 
 # Получить последнюю показанную версию из файла
@@ -173,6 +178,64 @@ async def send_startup_message(bot: Bot, chat_id: str) -> None:
         logger.error("Failed to send startup message: %s", exc)
 
 
+def _get_update_notified_version() -> str:
+    try:
+        return _UPDATE_NOTIFIED_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+
+
+def _mark_update_notified(version: str) -> None:
+    try:
+        _UPDATE_NOTIFIED_FILE.write_text(version, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not write update_notified.txt: %s", exc)
+
+
+async def check_remote_version(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch version.json from GitHub; notify user if a newer version is available."""
+    import urllib.request as _req
+    import json as _json
+
+    cfg     = _cfg(ctx)
+    chat_id = cfg.get("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        return
+
+    try:
+        with _req.urlopen(_REMOTE_VERSION_URL, timeout=10) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.debug("check_remote_version: fetch failed: %s", exc)
+        return
+
+    remote_ver = data.get("version", "")
+    if not remote_ver:
+        return
+
+    # Already running this version or newer — nothing to do
+    if not _ver_gt(remote_ver, BOT_VERSION):
+        return
+
+    # Already notified about this exact remote version — don't spam
+    if _get_update_notified_version() == remote_ver:
+        return
+
+    _mark_update_notified(remote_ver)
+
+    release_notes = data.get("release_notes", "")
+    text = (
+        f"🆕 <b>Доступна новая версия v{remote_ver}</b>\n\n"
+        + (f"{release_notes}\n\n" if release_notes else "")
+        + f"Ты используешь <b>v{BOT_VERSION}</b>.\n"
+        "Обновиться: /update — автоматически, или <code>git pull</code> вручную."
+    )
+    try:
+        await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        logger.error("check_remote_version: send failed: %s", exc)
+
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Static ReplyKeyboards
@@ -221,7 +284,7 @@ BACK_KB   = _kb(["◀️ Назад"])
 
 # Клавиатура полей конфигурации
 def _config_fields_kb() -> ReplyKeyboardMarkup:
-    rows = [[FIELD_LABELS[f]] for f in EDITABLE_FIELDS]
+    rows = [[FIELD_LABELS[f]] for f in EDITABLE_FIELDS if f != "MONOBANK_ACCOUNT_ID"]
     rows.append(["📋 Выбрать аккаунт Monobank"])
     rows.append(["◀️ Назад к настройкам"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -587,12 +650,6 @@ _CHANGELOG: dict[str, str] = {
         "🔍 <b>Аналитическая страница в месячном отчёте</b>\n"
         "Новая страница в каждом PDF: топ-5 категорий с динамикой к прошлому периоду, самый затратный день, топ-10 крупных трат, аномальные расходы (>2σ) и рекомендации\n\n"
         "───────────────────────\n"
-        "💳 <b>Транзакции</b>\n\n"
-        "➕ <b>Доходы без выбора категории</b>\n"
-        "Входящие переводы от Monobank больше не спрашивают категорию — только предложение добавить заметку или пропустить\n\n"
-        "📋 <b>Создание шаблона из меню шаблонов</b>\n"
-        "В меню шаблонов появилась кнопка ➕ Добавить шаблон — больше не нужно выходить в главное меню или помнить /create_template\n\n"
-        "───────────────────────\n"
         "🔌 <b>REST API</b>\n\n"
         "📂 <b>GET /categories</b>\n"
         "Внешние приложения теперь могут получить список категорий из Notion (кэш 5 минут)\n\n"
@@ -603,15 +660,31 @@ _CHANGELOG: dict[str, str] = {
         "⚙️ <b>/update теперь использует venv pip</b>\n"
         "При обновлении зависимости устанавливаются в виртуальное окружение, а не в системный Python"
     ),
+    "v1.5.5": (
+        "✨ <b>v1.5.5 — UX и уведомления об обновлениях</b>\n"
+        "───────────────────────\n\n"
+        "💳 <b>Транзакции</b>\n\n"
+        "➕ <b>Доходы без выбора категории</b>\n"
+        "Входящие переводы от Monobank больше не спрашивают категорию — только предложение добавить заметку или пропустить\n\n"
+        "📋 <b>Создание шаблона из меню шаблонов</b>\n"
+        "В меню шаблонов появилась кнопка ➕ Добавить шаблон — больше не нужно выходить в главное меню или помнить /create_template\n\n"
+        "───────────────────────\n"
+        "🔔 <b>Уведомления об обновлениях</b>\n\n"
+        "Бот автоматически сообщает когда выходит новая версия — прямо в чат, с описанием изменений и кнопкой /update\n\n"
+        "───────────────────────\n"
+        "🐛 <b>Исправления</b>\n\n"
+        "⚙️ <b>Настройки конфигурации</b>\n"
+        "Убрана дублирующая кнопка ввода Monobank Account ID — выбор аккаунта через кнопку «📋 Выбрать аккаунт»"
+    ),
 }
 
 _VERSIONS_ORDERED = [
-    "v1.5.4", "v1.5.3", "v1.5.2", "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
+    "v1.5.5", "v1.5.4", "v1.5.3", "v1.5.2", "v1.5.1", "v1.5", "v1.4.4", "v1.4.3", "v1.4.2",
     "v1.4.1", "v1.4.0", "v1.2.1", "v1.2", "v1.1", "v1.0",
 ]
 
 _VERSION_KB = _kb(
-    ["v1.5.4"],
+    ["v1.5.5", "v1.5.4"],
     ["v1.5.3", "v1.5.2"],
     ["v1.5.1"],
     ["v1.5"],

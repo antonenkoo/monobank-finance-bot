@@ -27,6 +27,7 @@ from bot_handlers import (
     cancel_handler,
     cmd_report,
     cmd_stats,
+    check_remote_version,
     handle_card_notes_text,
     handle_category_callback,
     handle_income_note_callback,
@@ -220,6 +221,9 @@ async def _post_init(app: Application) -> None:
     app.job_queue.run_once(_refresh_stats_cache, when=5, name="stats_warmup")
     # Fetch oldest transaction year for /report year range picker
     app.job_queue.run_once(_init_min_year, when=8, name="init_min_year")
+    # Check GitHub for a newer bot version — once on startup, then daily
+    app.job_queue.run_once(check_remote_version, when=30, name="remote_ver_startup")
+    app.job_queue.run_daily(check_remote_version, time=__import__("datetime").time(10, 0), name="remote_ver_daily")
 
 
 async def _post_shutdown(app: Application) -> None:
