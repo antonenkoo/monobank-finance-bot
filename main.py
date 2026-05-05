@@ -25,6 +25,7 @@ from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, 
 
 from bot_handlers import (
     cancel_handler,
+    cleanup_pending_store,
     cmd_report,
     cmd_stats,
     check_remote_version,
@@ -200,6 +201,19 @@ async def _init_min_year(ctx) -> None:
         logging.getLogger(__name__).warning("Could not fetch min_year: %s", exc)
 
 
+async def error_handler(update, context) -> None:
+    """Global PTB error handler — logs and notifies the user."""
+    logger = logging.getLogger(__name__)
+    logger.error("Unhandled PTB exception:", exc_info=context.error)
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "❌ Произошла внутренняя ошибка. Используй /cancel для сброса состояния."
+            )
+        except Exception:
+            pass
+
+
 async def _post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start",           "Главное меню"),
@@ -272,6 +286,7 @@ def main() -> None:
         .post_shutdown(_post_shutdown)
         .build()
     )
+    app.add_error_handler(error_handler)
     app.bot_data["config"] = cfg
     app.bot_data["templates"] = TemplateManager()
 
@@ -326,6 +341,13 @@ def main() -> None:
         send_monthly_report,
         time=_dt.time(9, 0, 0),
         name="monthly_report",
+    )
+    # Clean up stale pending transactions once per hour
+    app.job_queue.run_repeating(
+        cleanup_pending_store,
+        interval=3600,
+        first=60,
+        name="pending_cleanup",
     )
     # Startup banner
     status   = "✅ настроен" if cfg.is_configured() else "⚠️ требует настройки (/config)"

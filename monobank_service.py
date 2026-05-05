@@ -66,7 +66,6 @@ app = FastAPI(docs_url=None, redoc_url=None)
 # Set at startup so request handlers can filter by account
 _account_id: str = ""
 _mono_token: str = ""
-_feedback_port: int = 8765  # feedback-bot local port
 
 # Track the running server instance and ngrok listener for graceful restart
 _server_instance: Optional[uvicorn.Server] = None
@@ -308,40 +307,6 @@ async def api_create_transaction(request: Request) -> Response:
     )
 
 
-# ── Feedback proxy → feedback-bot on localhost:_feedback_port ──────────────────
-
-async def _proxy_to_feedback(request: Request, path: str) -> Response:
-    url  = f"http://localhost:{_feedback_port}/{path}"
-    body = await request.body()
-    req  = urllib.request.Request(
-        url,
-        data=body or None,
-        headers={k: v for k, v in request.headers.items()
-                 if k.lower() in ("content-type", "content-length")},
-        method=request.method,
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return Response(content=r.read(), status_code=r.status,
-                            media_type=r.headers.get("Content-Type", "application/json"))
-    except urllib.error.HTTPError as e:
-        return Response(content=e.read(), status_code=e.code, media_type="application/json")
-    except Exception as exc:
-        logger.error("feedback proxy error: %s", exc)
-        return Response(content=json.dumps({"error": str(exc)}),
-                        status_code=502, media_type="application/json")
-
-
-@app.post("/feedback")
-async def feedback_proxy(request: Request) -> Response:
-    return await _proxy_to_feedback(request, "feedback")
-
-
-@app.post("/feedback/voice")
-async def feedback_voice_proxy(request: Request) -> Response:
-    return await _proxy_to_feedback(request, "feedback/voice")
-
-
 @app.post("/feedback")
 async def receive_feedback(request: Request) -> Response:
     """
@@ -369,6 +334,36 @@ async def receive_feedback(request: Request) -> Response:
         "Feedback saved: %s from @%s  id=%s",
         entry.get("type"), entry.get("from_username"), entry["id"],
     )
+    return Response(
+        content=json.dumps({"status": "ok", "id": entry["id"]}, ensure_ascii=False),
+        status_code=200,
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@app.post("/feedback/voice")
+async def receive_feedback_voice(request: Request) -> Response:
+    """Receive voice feedback (multipart/form-data with 'audio' + JSON fields)."""
+    try:
+        form = await request.form()
+        audio_file = form.get("audio")
+        audio_bytes = await audio_file.read() if audio_file else b""
+        payload = {k: v for k, v in form.items() if k != "audio"}
+    except Exception:
+        return Response(status_code=400, content=b"bad form data")
+
+    entry = {
+        **payload,
+        "id":         str(uuid.uuid4())[:8],
+        "status":     "new",
+        "type":       "voice",
+        "audio_size": len(audio_bytes),
+    }
+    feedbacks = _load_feedbacks()
+    feedbacks.insert(0, entry)
+    _save_feedbacks(feedbacks)
+
+    logger.info("Voice feedback saved id=%s from @%s", entry["id"], entry.get("from_username"))
     return Response(
         content=json.dumps({"status": "ok", "id": entry["id"]}, ensure_ascii=False),
         status_code=200,
@@ -594,10 +589,9 @@ def run_webhook_server(
     feedback_port: int = 8765,
 ) -> threading.Thread:
     """Start the webhook server in a daemon thread. Returns the started Thread."""
-    global _account_id, _mono_token, _feedback_port
-    _account_id    = account_id
-    _mono_token    = mono_token
-    _feedback_port = feedback_port
+    global _account_id, _mono_token
+    _account_id = account_id
+    _mono_token = mono_token
 
     t = threading.Thread(
         target=_run_server_thread,
@@ -606,7 +600,7 @@ def run_webhook_server(
         name="webhook-server",
     )
     t.start()
-    logger.info("Webhook server запущен (порт %d, feedback→%d)", port, feedback_port)
+    logger.info("Webhook server запущен (порт %d)", port)
     return t
 
 

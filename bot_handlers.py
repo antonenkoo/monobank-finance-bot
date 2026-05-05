@@ -102,7 +102,7 @@ _RELEASE_SHOWN_FILE   = USER_DATA_DIR / "release_shown.txt"
 _UPDATE_NOTIFIED_FILE = USER_DATA_DIR / "update_notified.txt"
 
 _REMOTE_VERSION_URL = (
-    "https://raw.githubusercontent.com/antonenkoo/monobank-finance-bot/main/version.json"
+    "https://raw.githubusercontent.com/antonenkoo/monobank-finance-bot/master/version.json"
 )
 
 
@@ -202,9 +202,12 @@ async def check_remote_version(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat_id:
         return
 
-    try:
+    def _fetch() -> dict:
         with _req.urlopen(_REMOTE_VERSION_URL, timeout=10) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
+            return _json.loads(resp.read().decode("utf-8"))
+
+    try:
+        data = await asyncio.to_thread(_fetch)
     except Exception as exc:
         logger.debug("check_remote_version: fetch failed: %s", exc)
         return
@@ -1926,7 +1929,17 @@ async def _fetch_cats(ctx: ContextTypes.DEFAULT_TYPE) -> list[dict]:
         if not notion:
             logger.error("_fetch_cats: Notion не настроен (проверь NOTION_API_KEY / DB IDs в /config)")
         else:
-            fetched = await asyncio.to_thread(notion.get_categories)
+            try:
+                fetched = await asyncio.wait_for(
+                    asyncio.to_thread(notion.get_categories),
+                    timeout=15,
+                )
+            except asyncio.TimeoutError:
+                logger.error("_fetch_cats: таймаут 15с при загрузке категорий из Notion")
+                fetched = None
+            except Exception as exc:
+                logger.error("_fetch_cats: ошибка загрузки категорий: %s", exc)
+                fetched = None
             if fetched:
                 ctx.bot_data["cats_cache"]    = fetched
                 ctx.bot_data["cats_cache_ts"] = now
@@ -2746,12 +2759,29 @@ async def feedback_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 # Транскрипция голосового фидбека
 async def feedback_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     """Transcribe voice silently, ask user to confirm without showing transcription."""
-    import voice_handler
+    try:
+        import voice_handler
+    except ImportError:
+        await update.message.reply_text(
+            "❌ Голосовые сообщения недоступны — модуль voice_handler не установлен.\n"
+            "Пожалуйста, опиши проблему текстом.",
+            reply_markup=_FEEDBACK_BACK_KB,
+        )
+        return FEEDBACK_INPUT
+
     voice   = update.message.voice
     tg_file = await ctx.bot.get_file(voice.file_id)
     ogg     = await tg_file.download_as_bytearray()
 
-    transcription = await asyncio.to_thread(voice_handler.transcribe, bytes(ogg))
+    try:
+        transcription = await asyncio.to_thread(voice_handler.transcribe, bytes(ogg))
+    except Exception as exc:
+        logger.error("feedback_voice transcription error: %s", exc)
+        await update.message.reply_text(
+            "❌ Не удалось расшифровать голосовое. Попробуй ещё раз или напиши текстом.",
+            reply_markup=_FEEDBACK_BACK_KB,
+        )
+        return FEEDBACK_INPUT
 
     ctx.user_data["feedback_draft"]        = transcription or "[голосовое сообщение без расшифровки]"
     ctx.user_data["feedback_voice_ogg"]    = bytes(ogg)
@@ -4112,3 +4142,8 @@ async def process_trigger_queue(ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cancel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Нечего отменять.")
+
+
+async def cleanup_pending_store(_ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB job: remove stale pending transactions older than 24 hours."""
+    _pending_store.cleanup_old(max_age_hours=24)

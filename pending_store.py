@@ -8,6 +8,7 @@ bot restarts, so old messages stay actionable.
 
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -59,6 +60,7 @@ class PendingTransactionStore:
             "message_id":  None,          # set after message is sent
             "category_id": None,
             "cat_display": "",
+            "created_at":  time.time(),
         }
         self._write(data)
         logger.debug("Pending txn stored: %s (%s)", txn_id, item.get("description", "?"))
@@ -100,4 +102,16 @@ class PendingTransactionStore:
             data.pop(txn_id)
             self._write(data)
             logger.debug("Pending txn removed: %s", txn_id)
+
+    def cleanup_old(self, max_age_hours: float = 24) -> int:
+        """Remove entries older than max_age_hours. Returns count removed."""
+        cutoff = time.time() - max_age_hours * 3600
+        data = self._read()
+        stale = [k for k, v in data.items() if v.get("created_at", 0) < cutoff]
+        for k in stale:
+            data.pop(k)
+        if stale:
+            self._write(data)
+            logger.info("PendingStore: removed %d stale entries (>%gh old)", len(stale), max_age_hours)
+        return len(stale)
 
